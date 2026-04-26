@@ -83,6 +83,13 @@ pub fn generate_world_with_options(
     // Amenity processors use this for O(1) nearest-road-block lookups.
     let road_mask = highways::collect_road_surface_coords(&elements, &xzbbox, args.scale);
 
+    // Pre-collect OSM door/entrance nodes so building generation can place
+    // doors at the correct floor level when an entrance node coincides with
+    // a building wall. Nodes that get consumed this way are tracked in
+    // `consumed_entrances` and skipped by the fallback `generate_doors` path.
+    let entrances = doors::collect_building_entrances(&elements);
+    let mut consumed_entrances: HashSet<u64> = HashSet::new();
+
     // Process all elements (no longer need to partition boundaries)
     let elements_count: usize = elements.len();
     let process_pb: ProgressBar = ProgressBar::new(elements_count as u64);
@@ -166,6 +173,8 @@ pub fn generate_world_with_options(
                             None,
                             &flood_fill_cache,
                             &building_passages,
+                            &entrances,
+                            &mut consumed_entrances,
                         );
                     }
                 } else if way.tags.contains_key("highway") {
@@ -243,7 +252,7 @@ pub fn generate_world_with_options(
             }
             ProcessedElement::Node(node) => {
                 if node.tags.contains_key("door") || node.tags.contains_key("entrance") {
-                    doors::generate_doors(&mut editor, node);
+                    doors::generate_doors(&mut editor, node, &consumed_entrances);
                 } else if node.tags.contains_key("natural")
                     && node.tags.get("natural") == Some(&"tree".to_string())
                 {
@@ -299,6 +308,8 @@ pub fn generate_world_with_options(
                         &flood_fill_cache,
                         &xzbbox,
                         &building_passages,
+                        &entrances,
+                        &mut consumed_entrances,
                     );
                 } else if rel.tags.contains_key("water")
                     || rel

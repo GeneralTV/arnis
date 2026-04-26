@@ -5,6 +5,7 @@ use crate::clipping::clip_way_to_bbox;
 use crate::colors::color_text_to_rgb_tuple;
 use crate::coordinate_system::cartesian::XZPoint;
 use crate::deterministic_rng::{coord_rng, element_rng};
+use crate::element_processing::doors::BuildingEntrance;
 use crate::element_processing::historic;
 use crate::element_processing::subprocessor::buildings_interior::generate_building_interior;
 use crate::floodfill_cache::{CoordinateBitmap, FloodFillCache};
@@ -1841,6 +1842,76 @@ fn generate_special_doors(
     }
 }
 
+/// Places doors at OSM `entrance=*` / `door=*` nodes that coincide with this
+/// building's wall ring. Doors land on the actual ground-floor row
+/// (`start_y_offset + 1` relative + `abs_terrain_offset`) instead of the
+/// hard-coded `y=1` used by the fallback `generate_doors`. Marks each placed
+/// node ID in `consumed_entrances` so the fallback path skips it.
+fn generate_entrance_doors(
+    editor: &mut WorldEditor,
+    config: &BuildingConfig,
+    wall_outline: &[(i32, i32)],
+    entrances: &HashMap<(i32, i32), BuildingEntrance>,
+    consumed_entrances: &mut HashSet<u64>,
+    building_passages: &CoordinateBitmap,
+) {
+    if entrances.is_empty() || wall_outline.is_empty() {
+        return;
+    }
+
+    // Pick door material based on building category. Main entrances
+    // (entrance=main/primary/yes) prefer the lighter oak look used for shop /
+    // office front doors regardless of category; for non-main entrances we
+    // pick by category — warehouse/industrial get spruce doubles to match
+    // `generate_special_doors`, houses/farms keep the dark-oak fallback look.
+    let category_default = match config.category {
+        BuildingCategory::Industrial
+        | BuildingCategory::Warehouse
+        | BuildingCategory::Garage
+        | BuildingCategory::Shed => (SPRUCE_DOOR_LOWER, SPRUCE_DOOR_UPPER),
+        BuildingCategory::Office
+        | BuildingCategory::Hotel
+        | BuildingCategory::Commercial
+        | BuildingCategory::Hospital
+        | BuildingCategory::School => (OAK_DOOR, OAK_DOOR_UPPER),
+        _ => (DARK_OAK_DOOR_LOWER, DARK_OAK_DOOR_UPPER),
+    };
+
+    let door_y = config.start_y_offset + config.abs_terrain_offset + 1;
+
+    // Use a HashSet for O(1) wall membership tests. A typical building outline
+    // is hundreds of cells, and there can be many entrance candidates per
+    // generation, so the linear scan would be wasteful.
+    let wall_set: HashSet<(i32, i32)> = wall_outline.iter().copied().collect();
+
+    for (&(x, z), entrance) in entrances {
+        if !wall_set.contains(&(x, z)) {
+            continue;
+        }
+        if building_passages.contains(x, z) {
+            continue;
+        }
+        if consumed_entrances.contains(&entrance.node_id) {
+            continue;
+        }
+
+        // Main entrances (entrance=main/primary/yes) override the category
+        // default with an oak door — the conventional storefront/lobby look.
+        let (lower, upper) = if entrance.is_main_entrance {
+            (OAK_DOOR, OAK_DOOR_UPPER)
+        } else {
+            category_default
+        };
+
+        // Empty blacklist so the door overwrites the wall block placed by
+        // `build_wall_ring` on the same coordinate.
+        editor.set_block_absolute(lower, x, door_y, z, None, Some(&[]));
+        editor.set_block_absolute(upper, x, door_y + 1, z, None, Some(&[]));
+
+        consumed_entrances.insert(entrance.node_id);
+    }
+}
+
 /// Determines which block to place at a specific wall position (wall, window, or accent)
 #[inline]
 fn determine_wall_block_at_position(bx: i32, h: i32, bz: i32, config: &BuildingConfig) -> Block {
@@ -3445,6 +3516,7 @@ fn qualifies_for_auto_gabled_roof(building_type: &str) -> bool {
 // Main Building Generation Function
 // ============================================================================
 
+#[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn generate_buildings(
     editor: &mut WorldEditor,
@@ -3454,6 +3526,8 @@ pub fn generate_buildings(
     hole_polygons: Option<&[HolePolygon]>,
     flood_fill_cache: &FloodFillCache,
     building_passages: &CoordinateBitmap,
+    entrances: &HashMap<(i32, i32), BuildingEntrance>,
+    consumed_entrances: &mut HashSet<u64>,
 ) {
     // Early return for underground buildings
     if should_skip_underground_building(element) {
@@ -3706,6 +3780,20 @@ pub fn generate_buildings(
     // Generate special doors (garage doors, shed doors)
     if config.has_garage_door || config.has_single_door {
         generate_special_doors(editor, element, &config, &wall_outline, effective_passages);
+    }
+
+    // Place doors at OSM entrance / door nodes that fall on this building's wall.
+    // Only ground-level buildings get entrances — elevated building:parts are
+    // above street level and shouldn't have ground-floor doors.
+    if config.is_ground_level {
+        generate_entrance_doors(
+            editor,
+            &config,
+            &wall_outline,
+            entrances,
+            consumed_entrances,
+            effective_passages,
+        );
     }
 
     // Add shutters and window boxes to small residential buildings
@@ -5499,6 +5587,7 @@ fn generate_roof(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn generate_building_from_relation(
     editor: &mut WorldEditor,
     relation: &ProcessedRelation,
@@ -5506,6 +5595,8 @@ pub fn generate_building_from_relation(
     flood_fill_cache: &FloodFillCache,
     xzbbox: &crate::coordinate_system::cartesian::XZBBox,
     building_passages: &CoordinateBitmap,
+    entrances: &HashMap<(i32, i32), BuildingEntrance>,
+    consumed_entrances: &mut HashSet<u64>,
 ) {
     // Skip underground buildings/building parts
     // Check layer tag
@@ -5689,6 +5780,8 @@ pub fn generate_building_from_relation(
                 hole_polygons.as_deref(),
                 flood_fill_cache,
                 building_passages,
+                entrances,
+                consumed_entrances,
             );
         }
     }
