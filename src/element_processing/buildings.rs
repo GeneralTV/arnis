@@ -1836,8 +1836,143 @@ fn generate_special_doors(
                     None,
                     Some(&[]),
                 );
+
+                // Stoop / awning in front of the door
+                if let Some((cx, cz)) = compute_building_centroid(&element.nodes) {
+                    place_porch(editor, door_x, door_z, door_y, cx, cz, config);
+                }
             }
         }
+    }
+
+    // Garage doors also get a porch slab so the threshold isn't a
+    // bare grass square in front of a roll-up door.
+    if config.has_garage_door {
+        if let Some((cx, cz)) = compute_building_centroid(&element.nodes) {
+            // Re-walk the segments to find the placed garage door pair.
+            for i in 0..nodes.len().saturating_sub(1) {
+                let (x1, z1) = (nodes[i].x, nodes[i].z);
+                let (x2, z2) = (nodes[i + 1].x, nodes[i + 1].z);
+                let dx = (x2 - x1).abs();
+                let dz = (z2 - z1).abs();
+                let segment_len = dx.max(dz);
+                if segment_len < 2 {
+                    continue;
+                }
+                let mid_x = (x1 + x2) / 2;
+                let mid_z = (z1 + z2) / 2;
+                let (door1_x, door1_z, door2_x, door2_z) = if dx > dz {
+                    (mid_x, mid_z, mid_x + 1, mid_z)
+                } else {
+                    (mid_x, mid_z, mid_x, mid_z + 1)
+                };
+                if building_passages.contains(door1_x, door1_z)
+                    || building_passages.contains(door2_x, door2_z)
+                {
+                    continue;
+                }
+                place_porch(editor, door1_x, door1_z, door_y, cx, cz, config);
+                place_porch(editor, door2_x, door2_z, door_y, cx, cz, config);
+                break;
+            }
+        }
+    }
+}
+
+/// Places a small stoop in front of the given door cell.
+///
+/// * A 1-block (House: 2-block) deep slab acts as the threshold step,
+///   half a block above outdoor terrain so players step up onto it
+///   before walking through the door.
+/// * For two- and three-storey buildings (House / Office / Hotel /
+///   Hospital / Religious / TallBuilding) an upside-down stair sits
+///   one block above the door upper as an awning, projecting outward.
+///
+/// The outward direction is derived from the building centroid by
+/// snapping to the dominant axis. This keeps the porch perpendicular
+/// to the wall on rectangular footprints; on highly irregular shapes
+/// it falls back to the closest cardinal direction.
+fn place_porch(
+    editor: &mut WorldEditor,
+    door_x: i32,
+    door_z: i32,
+    door_y: i32,
+    cx: i32,
+    cz: i32,
+    config: &BuildingConfig,
+) {
+    let dx = door_x - cx;
+    let dz = door_z - cz;
+    if dx == 0 && dz == 0 {
+        return;
+    }
+    let (nx, nz) = if dx.abs() >= dz.abs() {
+        (dx.signum(), 0)
+    } else {
+        (0, dz.signum())
+    };
+    if (nx, nz) == (0, 0) {
+        return;
+    }
+
+    // Pick stoop materials per category.
+    let (slab_block, stair_material) = match config.category {
+        BuildingCategory::House
+        | BuildingCategory::Residential
+        | BuildingCategory::Farm
+        | BuildingCategory::Garage
+        | BuildingCategory::Shed => (OAK_SLAB, OAK_PLANKS),
+        BuildingCategory::Industrial | BuildingCategory::Warehouse => {
+            (SMOOTH_STONE_SLAB, STONE_BRICKS)
+        }
+        BuildingCategory::Office
+        | BuildingCategory::Commercial
+        | BuildingCategory::Hotel
+        | BuildingCategory::Hospital
+        | BuildingCategory::School
+        | BuildingCategory::ModernSkyscraper
+        | BuildingCategory::TallBuilding
+        | BuildingCategory::GlassySkyscraper => (SMOOTH_STONE_SLAB, STONE_BRICKS),
+        BuildingCategory::Religious | BuildingCategory::Historic | BuildingCategory::Tower => {
+            (STONE_BRICK_SLAB, STONE_BRICKS)
+        }
+        _ => (STONE_BRICK_SLAB, STONE_BRICKS),
+    };
+
+    // Stoop slab one block outward at indoor floor Y.  The floor block
+    // sits at (door_y - 1); a slab on the outside cell at the same Y
+    // gives a half-block step that reads as a real threshold instead
+    // of a flush exit straight onto grass.
+    let stoop_y = door_y - 1;
+    let stoop1_x = door_x + nx;
+    let stoop1_z = door_z + nz;
+    editor.set_block_absolute(slab_block, stoop1_x, stoop_y, stoop1_z, None, None);
+
+    // Slightly deeper stoop for residential entrances so a porch is
+    // legible at street level.
+    if matches!(
+        config.category,
+        BuildingCategory::House | BuildingCategory::Residential
+    ) {
+        editor.set_block_absolute(
+            slab_block,
+            stoop1_x + nx,
+            stoop_y,
+            stoop1_z + nz,
+            None,
+            None,
+        );
+    }
+
+    // Awning above the door for buildings with at least 2 floors of
+    // wall above the door (door occupies +1 / +2; awning sits at +3).
+    // Skip on sheds / single-storey huts where the door already sits
+    // close to the eaves.
+    if config.building_height >= 4 {
+        let awning_y = door_y + 2;
+        let facing = facing_for_normal(nx, nz);
+        let awning = make_upside_down_stair(stair_material, facing);
+        editor.set_block_with_properties_absolute(awning, stoop1_x, awning_y, stoop1_z, None, None);
     }
 }
 
