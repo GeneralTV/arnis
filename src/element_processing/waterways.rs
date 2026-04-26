@@ -25,6 +25,13 @@ pub fn generate_waterways(editor: &mut WorldEditor, element: &ProcessedWay) {
             return;
         }
 
+        // Ditches and drains are small drainage channels. When they sit
+        // on dry land the regular `create_water_channel` placement
+        // skips every cell where ground is above water level, so the
+        // ditch is invisible. Carve a 1-block-deep dry trench instead
+        // so the depression is actually rendered.
+        let is_drainage = matches!(waterway_type.as_str(), "ditch" | "drain");
+
         // Process consecutive node pairs to create waterways
         // Use windows(2) to avoid connecting last node back to first
         for nodes_pair in element.nodes.windows(2) {
@@ -47,8 +54,70 @@ pub fn generate_waterways(editor: &mut WorldEditor, element: &ProcessedWay) {
             );
 
             for (bx, _, bz) in bresenham_points {
+                if is_drainage {
+                    create_drainage_trench(editor, bx, bz, waterway_width);
+                }
                 create_water_channel(editor, bx, bz, waterway_width, seg_water_y);
             }
+        }
+    }
+}
+
+/// Carve a shallow drainage trench so a `ditch` / `drain` is visible
+/// even on dry ground where the regular water-channel path would skip
+/// the cells. We dig one block down (replacing the surface with
+/// COARSE_DIRT so it visibly differs from the surrounding lawn) and
+/// clear any vegetation directly above. The subsequent
+/// `create_water_channel` call still gets a chance to place water
+/// for stretches that intersect the natural water table.
+fn create_drainage_trench(editor: &mut WorldEditor, center_x: i32, center_z: i32, width: i32) {
+    let half_width = width / 2;
+
+    for x in (center_x - half_width)..=(center_x + half_width) {
+        for z in (center_z - half_width)..=(center_z + half_width) {
+            let dx = (x - center_x).abs();
+            let dz = (z - center_z).abs();
+            let distance_from_center = dx.max(dz);
+
+            if distance_from_center > half_width {
+                continue;
+            }
+
+            let ground_y = editor.get_ground_level(x, z);
+
+            // Clear any vegetation right above the ground so the
+            // trench bottom is actually exposed.
+            for above in 1..=2 {
+                editor.set_block_absolute(
+                    AIR,
+                    x,
+                    ground_y + above,
+                    z,
+                    Some(&[
+                        GRASS,
+                        WHEAT,
+                        CARROTS,
+                        POTATOES,
+                        DEAD_BUSH,
+                        OAK_LEAVES,
+                        TALL_GRASS_BOTTOM,
+                        TALL_GRASS_TOP,
+                        FERN,
+                        LARGE_FERN_LOWER,
+                        LARGE_FERN_UPPER,
+                        RED_FLOWER,
+                        BLUE_FLOWER,
+                        WHITE_FLOWER,
+                        YELLOW_FLOWER,
+                    ]),
+                    None,
+                );
+            }
+
+            // Replace the surface block with bare coarse dirt so the
+            // trench reads as a man-made drainage cut rather than a
+            // grassy stripe.
+            editor.set_block_absolute(COARSE_DIRT, x, ground_y, z, None, Some(&[]));
         }
     }
 }
