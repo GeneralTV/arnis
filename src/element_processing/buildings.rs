@@ -2189,17 +2189,26 @@ fn generate_residential_window_decorations(
 
                             let abs_y = h + config.abs_terrain_offset;
 
-                            // Tall apartment buildings (Residential
-                            // category, >=8 floors) get balconies on
-                            // ~35% of their centre-column windows so
-                            // the facade reads as an apartment block
-                            // rather than a row of decorated punched
-                            // windows. Lower-rise houses keep the
-                            // original ~8% rate so a single-family
-                            // home doesn't grow a forest of balconies.
+                            // Mid-rise apartment-style residential blocks
+                            // (Residential category, ~4+ floors) get
+                            // balconies on ~35% of their centre-column
+                            // windows so the facade reads as an apartment
+                            // building rather than a row of decorated
+                            // punched windows.
+                            //
+                            // `building_height` here is the wall height in
+                            // *blocks* (each floor is `levels * 4 + 2`),
+                            // so 18 blocks ≈ 4 floors. The function
+                            // early-returns for true tall buildings
+                            // (`is_tall_building`, >7 levels), so this
+                            // threshold targets the 4-7 floor residential
+                            // subset. Single-family houses (`House`
+                            // category) and 1-2 floor row blocks keep the
+                            // original ~8% rate so they don't grow a
+                            // forest of balconies.
                             let balcony_threshold =
                                 if matches!(config.category, BuildingCategory::Residential)
-                                    && config.building_height >= 8
+                                    && config.building_height >= 18
                                 {
                                     50
                                 } else {
