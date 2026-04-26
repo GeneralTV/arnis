@@ -1629,7 +1629,17 @@ fn build_wall_ring(
                 z,
             );
 
-            for (bx, _, bz) in bresenham_points {
+            // `local_t` is the per-segment index along the wall produced by
+            // Bresenham — used to lay out window bays *along* the wall instead
+            // of off the global `(bx + bz)` grid (which gives diagonal stripes
+            // on rotated buildings). `segment_len` lets us flag the first/last
+            // step as a corner so we never punch a window through it.
+            let segment_len = bresenham_points.len() as i32;
+            for (local_idx, (bx, _, bz)) in bresenham_points.iter().enumerate() {
+                let bx = *bx;
+                let bz = *bz;
+                let local_t = local_idx as i32;
+                let is_corner = segment_len <= 1 || local_t == 0 || local_t == segment_len - 1;
                 // Passages only apply to ground-level buildings; elevated
                 // building:part elements (min_level > 0) receive an empty bitmap
                 // via effective_passages, so this is always false for them.
@@ -1670,7 +1680,7 @@ fn build_wall_ring(
                 };
 
                 for h in wall_start..=(config.start_y_offset + config.building_height) {
-                    let block = determine_wall_block_at_position(bx, h, bz, config);
+                    let block = determine_wall_block_at_position(h, local_t, is_corner, config);
                     editor.set_block_absolute(
                         block,
                         bx,
@@ -1841,9 +1851,46 @@ fn generate_special_doors(
     }
 }
 
-/// Determines which block to place at a specific wall position (wall, window, or accent)
+/// Returns the per-segment "bay" width for a building category — i.e. how
+/// many blocks of wall make up one window column module. Houses get wider
+/// bays so windows feel sparser (and can host shutters/sills); offices get
+/// the tightest grid; warehouses are the sparsest with rare small windows.
+///
+/// A bay places its window slot at `local_t % bay_width == bay_width / 2`,
+/// so the window always sits in the middle of the bay rather than at a
+/// corner of the wall segment.
 #[inline]
-fn determine_wall_block_at_position(bx: i32, h: i32, bz: i32, config: &BuildingConfig) -> Block {
+fn bay_width_for_category(cat: BuildingCategory) -> i32 {
+    match cat {
+        BuildingCategory::House | BuildingCategory::Residential | BuildingCategory::Farm => 5,
+        BuildingCategory::Office
+        | BuildingCategory::Hotel
+        | BuildingCategory::Hospital
+        | BuildingCategory::School => 3,
+        BuildingCategory::Industrial | BuildingCategory::Warehouse => 7,
+        BuildingCategory::Religious => 4,
+        BuildingCategory::Commercial => 4,
+        _ => 4,
+    }
+}
+
+/// Determines which block to place at a specific wall position (wall, window, or accent).
+///
+/// `local_t` is the index of `(bx, bz)` along the current wall segment
+/// (0..segment_len), produced by `build_wall_ring`. `is_corner` is true at
+/// the first and last block of every segment — corners never receive
+/// windows or a vertical accent stripe so the building keeps clean edges.
+///
+/// Window placement uses `local_t` so wall segments oriented at any angle
+/// share the same bay rhythm, instead of inheriting the diagonal-stripe
+/// artefact produced by the previous global `(bx + bz) % 6` rule.
+#[inline]
+fn determine_wall_block_at_position(
+    h: i32,
+    local_t: i32,
+    is_corner: bool,
+    config: &BuildingConfig,
+) -> Block {
     let floor_row = config.floor_row(h);
 
     // If windows are disabled, always use wall block (with possible accent)
@@ -1860,7 +1907,8 @@ fn determine_wall_block_at_position(bx: i32, h: i32, bz: i32, config: &BuildingC
 
     if config.use_horizontal_windows {
         // Modern skyscraper pattern: continuous horizontal window bands
-        // with stone separation bands at floor levels (every 4th block)
+        // with stone separation bands at floor levels (every 4th block).
+        // Bay layout doesn't apply here — full-width ribbons are the look.
         if above_floor && config.has_lobby_base && h <= config.start_y_offset + 5 {
             // Solid lobby base: first floor cycle uses wall block
             config.wall_block
@@ -1874,10 +1922,13 @@ fn determine_wall_block_at_position(bx: i32, h: i32, bz: i32, config: &BuildingC
             config.wall_block
         }
     } else if config.category == BuildingCategory::Tower {
-        // Tower pattern: glass windows every 4 blocks along the wall,
-        // only in the middle two rows of each 4-row floor
-        let is_slit =
-            above_floor && (floor_row == 1 || floor_row == 2) && ((bx + bz) % 4 + 4) % 4 == 1;
+        // Tower slit pattern: arrow-loop windows on the middle rows of every
+        // 4-block floor cycle, every 4th block along the wall. Skip corners
+        // so the slits don't clip into the next wall segment.
+        let is_slit = above_floor
+            && (floor_row == 1 || floor_row == 2)
+            && !is_corner
+            && local_t.rem_euclid(4) == 2;
 
         if is_slit {
             config.window_block
@@ -1890,15 +1941,22 @@ fn determine_wall_block_at_position(bx: i32, h: i32, bz: i32, config: &BuildingC
             }
         }
     } else if config.is_tall_building && config.use_vertical_windows {
-        // Tall building pattern, vertical window strips alternating with wall columns
-        if above_floor && (bx + bz) % 2 == 0 {
+        // Tall building pattern: vertical window strips alternating with wall
+        // columns. Stepping by `local_t` keeps the rhythm aligned to each
+        // wall segment instead of the global grid.
+        if above_floor && !is_corner && local_t.rem_euclid(2) == 1 {
             config.window_block
         } else {
             config.wall_block
         }
     } else {
-        // Regular building pattern
-        let is_window_position = above_floor && floor_row != 0 && (bx + bz).rem_euclid(6) < 3;
+        // Regular building pattern: facade bays. One window per `bay_width`
+        // wall blocks, always at the middle of the bay, never on a corner.
+        let bay_width = bay_width_for_category(config.category);
+        let bay_pos = local_t.rem_euclid(bay_width);
+        let in_window_bay = bay_pos == bay_width / 2;
+
+        let is_window_position = above_floor && floor_row != 0 && !is_corner && in_window_bay;
 
         if is_window_position {
             config.window_block
@@ -1907,7 +1965,8 @@ fn determine_wall_block_at_position(bx: i32, h: i32, bz: i32, config: &BuildingC
             let use_vertical_accent_here = config.use_vertical_accent
                 && above_floor
                 && floor_row == 0
-                && (bx + bz).rem_euclid(6) < 3;
+                && !is_corner
+                && in_window_bay;
 
             if use_accent_line || use_vertical_accent_here {
                 config.accent_block
