@@ -1,5 +1,5 @@
 use crate::block_definitions::*;
-use crate::bresenham::bresenham_line;
+use crate::bresenham::bresenham_line_4_connected;
 use crate::osm_parser::{ProcessedElement, ProcessedNode};
 use crate::world_editor::WorldEditor;
 
@@ -93,10 +93,12 @@ pub fn generate_barriers(editor: &mut WorldEditor, element: &ProcessedElement) {
             let x2: i32 = cur.x;
             let z2: i32 = cur.z;
 
-            // Generate the line of coordinates between the two nodes
-            let bresenham_points: Vec<(i32, i32, i32)> = bresenham_line(x1, 0, z1, x2, 0, z2);
+            // 4-connected line so the fence has no diagonal gaps that
+            // a player could walk through and that auto-connecting
+            // fence / wall geometry would render as broken segments.
+            let line: Vec<(i32, i32)> = bresenham_line_4_connected(x1, z1, x2, z2);
 
-            for (bx, _, bz) in bresenham_points {
+            for (bx, bz) in line {
                 // Build the barrier wall to the specified height
                 for y in 1..=wall_height {
                     editor.set_block(barrier_material, bx, y, bz, None, None);
