@@ -181,6 +181,64 @@ pub fn generate_railways(
                 editor.set_block(AIR, bx, rail_y + clearance, bz, None, Some(&[]));
             }
 
+            // Lateral cutting: when an at-grade rail runs through a
+            // hill, the terrain on either side of the track sits well
+            // above rail level. Without carving anything sideways, the
+            // 3-block vertical air column above the rail looks like a
+            // narrow trench with vertical walls only directly above the
+            // sleepers — neighbouring rail cells (on the diagonal pairs
+            // along a curving line) still see hill blocks at eye level.
+            //
+            // Determine the rail's local axis from the smoothed
+            // centerline neighbours and clear `cutting_radius` cells on
+            // each perpendicular side, up to whichever ground is higher
+            // there (capped at +4 above the rail to avoid blasting
+            // mountain interiors). Cuttings only apply at-grade
+            // (layer_offset == 0) so bridges and overpasses are
+            // untouched.
+            if layer_offset == 0 {
+                let (axis_dx, axis_dz) = match (prev_xz, next_xz) {
+                    (Some((px, pz)), Some((nx, nz))) => (nx - px, nz - pz),
+                    (Some((px, pz)), None) => (bx - px, bz - pz),
+                    (None, Some((nx, nz))) => (nx - bx, nz - bz),
+                    (None, None) => (1, 0),
+                };
+                // Perpendicular axis (rotated 90°); fall back to
+                // (0, 1) when the segment is degenerate so we still
+                // clear *some* lateral space.
+                let (perp_dx, perp_dz) = if axis_dx == 0 && axis_dz == 0 {
+                    (0, 1)
+                } else if axis_dx.abs() >= axis_dz.abs() {
+                    (0, axis_dx.signum())
+                } else {
+                    (-axis_dz.signum(), 0)
+                };
+
+                let cutting_radius = 1i32;
+                let cutting_max_height = 4i32;
+
+                for side in [-1i32, 1i32] {
+                    for r in 1..=cutting_radius {
+                        let lx = bx + perp_dx * side * r;
+                        let lz = bz + perp_dz * side * r;
+                        let lateral_ground = editor.get_ground_level(lx, lz);
+
+                        // Only carve where the side terrain genuinely
+                        // sits above the rail. Don't fill below — the
+                        // gravel-on-ascending logic already supports
+                        // the rail when terrain dips.
+                        if lateral_ground > current_ground {
+                            let top = (lateral_ground - current_ground)
+                                .min(cutting_max_height)
+                                .max(1);
+                            for h in 1..=top {
+                                editor.set_block(AIR, lx, h, lz, None, Some(&[]));
+                            }
+                        }
+                    }
+                }
+            }
+
             // Index-based sleeper placement (every 4 cells along the
             // track) so a sleeper appears at a consistent rhythm
             // regardless of the line's compass orientation. The previous
