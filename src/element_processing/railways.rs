@@ -173,12 +173,12 @@ pub fn generate_railways(
             // Clear vertical clearance for minecarts: 3 blocks of air
             // above the rail. Without this an at-grade rail running into
             // a hill is buried under terrain blocks generated later and
-            // becomes unrideable. Use AIR with an empty preserve list so
-            // we overwrite anything already placed (terrain pass runs
-            // after element processing, so only foliage / overhead
-            // structures end up here at this point).
+            // becomes unrideable. Pass an empty blacklist so the AIR
+            // call unconditionally overwrites whatever is there
+            // (`None, None` only inserts into empty cells, which is
+            // the opposite of what we need here).
             for clearance in 1..=3 {
-                editor.set_block(AIR, bx, rail_y + clearance, bz, None, None);
+                editor.set_block(AIR, bx, rail_y + clearance, bz, None, Some(&[]));
             }
 
             // Index-based sleeper placement (every 4 cells along the
