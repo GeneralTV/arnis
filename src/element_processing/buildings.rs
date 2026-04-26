@@ -1994,9 +1994,10 @@ fn apply_loading_dock(
 
     let mid = (pts.len() / 2) as i32;
     let abs = config.abs_terrain_offset;
-    // Cap the dock height at four rows or the building height, whichever
-    // is shorter — small warehouses shouldn't lose their entire facade.
-    let dock_top = config.start_y_offset + 4.min(config.building_height);
+    // Cap the dock at `building_height - 1` rows so at least one row of
+    // wall remains above the opening, and at four rows otherwise — a
+    // taller dock would visually dominate even on a four-storey warehouse.
+    let dock_top = config.start_y_offset + (config.building_height - 1).min(4);
 
     for offset in [-1, 0, 1] {
         let pos = mid + offset;
