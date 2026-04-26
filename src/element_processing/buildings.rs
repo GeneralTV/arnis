@@ -2189,6 +2189,23 @@ fn generate_residential_window_decorations(
 
                             let abs_y = h + config.abs_terrain_offset;
 
+                            // Tall apartment buildings (Residential
+                            // category, >=8 floors) get balconies on
+                            // ~35% of their centre-column windows so
+                            // the facade reads as an apartment block
+                            // rather than a row of decorated punched
+                            // windows. Lower-rise houses keep the
+                            // original ~8% rate so a single-family
+                            // home doesn't grow a forest of balconies.
+                            let balcony_threshold =
+                                if matches!(config.category, BuildingCategory::Residential)
+                                    && config.building_height >= 8
+                                {
+                                    50
+                                } else {
+                                    23
+                                };
+
                             if decoration_roll < 15 {
                                 // ── Window sill ──
                                 let lx = bx + out_nx;
@@ -2222,7 +2239,7 @@ fn generate_residential_window_decorations(
                                         None,
                                     );
                                 }
-                            } else if decoration_roll < 23 && mod6 == 1 {
+                            } else if decoration_roll < balcony_threshold && mod6 == 1 {
                                 // ── Balcony (placed once from centre col) ──
                                 // A small 3-wide × 2-deep platform with
                                 // open-trapdoor railing around the outer
@@ -2266,6 +2283,30 @@ fn generate_residential_window_decorations(
                                             None,
                                         );
                                     }
+                                }
+
+                                // Support bracket: a top-slab one block
+                                // below the balcony floor at depth 1
+                                // (where the platform meets the wall).
+                                // Without it the balcony reads as
+                                // floating; with it the platform looks
+                                // structurally bracketed onto the
+                                // facade. We place at three positions
+                                // (matching the platform width) and
+                                // only fill from AIR so we never
+                                // overwrite the wall itself.
+                                let support_slab = make_top_slab(SMOOTH_STONE_SLAB);
+                                for t in -1i32..=1 {
+                                    let sx = bx + tan_x * t + out_nx;
+                                    let sz = bz + tan_z * t + out_nz;
+                                    editor.set_block_with_properties_absolute(
+                                        support_slab.clone(),
+                                        sx,
+                                        abs_y - 1,
+                                        sz,
+                                        Some(&[AIR]),
+                                        None,
+                                    );
                                 }
 
                                 // Front fence: trapdoors at depth 3
