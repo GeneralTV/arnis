@@ -86,6 +86,10 @@ pub fn generate_railways(
 
         let layer_offset = layer_value * LAYER_HEIGHT_STEP;
 
+        // Build the centerline once for the entire way so cross-segment
+        // joins also get a 4-connected smoothing pass and `j` indexes
+        // along-the-track sleepers consistently rather than per-segment.
+        let mut centerline: Vec<(i32, i32, i32)> = Vec::new();
         for i in 1..element.nodes.len() {
             let prev_node = element.nodes[i - 1].xz();
             let cur_node = element.nodes[i].xz();
@@ -93,75 +97,97 @@ pub fn generate_railways(
             let points = bresenham_line(prev_node.x, 0, prev_node.z, cur_node.x, 0, cur_node.z);
             let smoothed_points = smooth_diagonal_rails(&points);
 
-            for j in 0..smoothed_points.len() {
-                let (bx, _, bz) = smoothed_points[j];
-
-                // Base offsets from ground level.
-                // When layer_offset > 0 the rail floats above terrain (bridge/overpass).
-                let gravel_y = layer_offset;
-                let rail_y = layer_offset + 1;
-
-                // --- Terrain-slope detection (only for at-grade railways) ---
-                // When terrain is enabled and layer == 0 we try to place ascending
-                // rail variants so consecutive blocks stay visually connected even
-                // when the ground rises or falls by one block per step.
-                let prev_ground = if j > 0 {
-                    let (px, _, pz) = smoothed_points[j - 1];
-                    editor.get_ground_level(px, pz)
-                } else {
-                    editor.get_ground_level(bx, bz)
-                };
-
-                let next_ground = if j + 1 < smoothed_points.len() {
-                    let (nx, _, nz) = smoothed_points[j + 1];
-                    editor.get_ground_level(nx, nz)
-                } else {
-                    editor.get_ground_level(bx, bz)
-                };
-
-                let current_ground = editor.get_ground_level(bx, bz);
-
-                // Fill the vertical gap under the rail when terrain rises steeply
-                // so there is always a solid gravel block supporting the track.
-                if layer_offset == 0 && prev_ground < current_ground {
-                    for fill_y in prev_ground..current_ground {
-                        editor.set_block_absolute(GRAVEL, bx, fill_y, bz, None, None);
-                    }
+            // Append, dropping duplicates at the segment join so a sleeper
+            // / orientation isn't double-placed and the j-based interval
+            // stays even.
+            for p in smoothed_points {
+                if centerline.last().copied() != Some(p) {
+                    centerline.push(p);
                 }
+            }
+        }
 
-                editor.set_block(GRAVEL, bx, gravel_y, bz, None, None);
+        for j in 0..centerline.len() {
+            let (bx, _, bz) = centerline[j];
 
-                let prev_xz = if j > 0 {
-                    let (px, _, pz) = smoothed_points[j - 1];
-                    Some((px, pz))
-                } else {
-                    None
-                };
-                let next_xz = if j + 1 < smoothed_points.len() {
-                    let (nx, _, nz) = smoothed_points[j + 1];
-                    Some((nx, nz))
-                } else {
-                    None
-                };
+            // Base offsets from ground level.
+            // When layer_offset > 0 the rail floats above terrain (bridge/overpass).
+            let gravel_y = layer_offset;
+            let rail_y = layer_offset + 1;
 
-                let rail_block = if layer_offset == 0 {
-                    determine_rail_with_slope(
-                        (bx, bz),
-                        prev_xz,
-                        next_xz,
-                        prev_ground,
-                        current_ground,
-                        next_ground,
-                    )
-                } else {
-                    determine_rail_direction((bx, bz), prev_xz, next_xz)
-                };
+            // --- Terrain-slope detection (only for at-grade railways) ---
+            let prev_ground = if j > 0 {
+                let (px, _, pz) = centerline[j - 1];
+                editor.get_ground_level(px, pz)
+            } else {
+                editor.get_ground_level(bx, bz)
+            };
 
-                editor.set_block(rail_block, bx, rail_y, bz, None, None);
+            let next_ground = if j + 1 < centerline.len() {
+                let (nx, _, nz) = centerline[j + 1];
+                editor.get_ground_level(nx, nz)
+            } else {
+                editor.get_ground_level(bx, bz)
+            };
 
-                if bx % 4 == 0 {
-                    editor.set_block(OAK_LOG, bx, gravel_y, bz, None, None);
+            let current_ground = editor.get_ground_level(bx, bz);
+
+            // Fill the vertical gap under the rail on rising terrain so
+            // there is always a solid gravel block supporting the track.
+            if layer_offset == 0 && prev_ground < current_ground {
+                for fill_y in prev_ground..current_ground {
+                    editor.set_block_absolute(GRAVEL, bx, fill_y, bz, None, None);
                 }
+            }
+
+            editor.set_block(GRAVEL, bx, gravel_y, bz, None, None);
+
+            let prev_xz = if j > 0 {
+                let (px, _, pz) = centerline[j - 1];
+                Some((px, pz))
+            } else {
+                None
+            };
+            let next_xz = if j + 1 < centerline.len() {
+                let (nx, _, nz) = centerline[j + 1];
+                Some((nx, nz))
+            } else {
+                None
+            };
+
+            let rail_block = if layer_offset == 0 {
+                determine_rail_with_slope(
+                    (bx, bz),
+                    prev_xz,
+                    next_xz,
+                    prev_ground,
+                    current_ground,
+                    next_ground,
+                )
+            } else {
+                determine_rail_direction((bx, bz), prev_xz, next_xz)
+            };
+
+            editor.set_block(rail_block, bx, rail_y, bz, None, None);
+
+            // Clear vertical clearance for minecarts: 3 blocks of air
+            // above the rail. Without this an at-grade rail running into
+            // a hill is buried under terrain blocks generated later and
+            // becomes unrideable. Use AIR with an empty preserve list so
+            // we overwrite anything already placed (terrain pass runs
+            // after element processing, so only foliage / overhead
+            // structures end up here at this point).
+            for clearance in 1..=3 {
+                editor.set_block(AIR, bx, rail_y + clearance, bz, None, None);
+            }
+
+            // Index-based sleeper placement (every 4 cells along the
+            // track) so a sleeper appears at a consistent rhythm
+            // regardless of the line's compass orientation. The previous
+            // `bx % 4` rule placed sleepers only on north-south rails and
+            // missed them entirely on east-west or diagonal segments.
+            if j % 4 == 0 {
+                editor.set_block(OAK_LOG, bx, gravel_y, bz, None, None);
             }
         }
     }
