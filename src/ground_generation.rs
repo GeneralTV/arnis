@@ -17,10 +17,11 @@ use crate::args::Args;
 use crate::block_definitions::{
     AIR, ANDESITE, BEDROCK, BLACK_CONCRETE, BLUE_FLOWER, BRICK, CARROTS, CLAY, COARSE_DIRT,
     COBBLED_DEEPSLATE, COBBLESTONE, CRACKED_STONE_BRICKS, CYAN_TERRACOTTA, DEAD_BUSH, DEEPSLATE,
-    DIRT, DIRT_PATH, FARMLAND, GRASS, GRASS_BLOCK, GRAVEL, GRAY_CONCRETE, GRAY_CONCRETE_POWDER,
-    HAY_BALE, LIGHT_GRAY_CONCRETE, MUD, OAK_LEAVES, OAK_PLANKS, POTATOES, RED_FLOWER, SAND,
-    SANDSTONE, SMOOTH_STONE, STONE, STONE_BRICKS, TALL_GRASS_BOTTOM, TALL_GRASS_TOP, TUFF, WATER,
-    WHEAT, WHITE_CONCRETE, WHITE_FLOWER, YELLOW_FLOWER,
+    DIRT, DIRT_PATH, FARMLAND, FERN, GRASS, GRASS_BLOCK, GRAVEL, GRAY_CONCRETE,
+    GRAY_CONCRETE_POWDER, HAY_BALE, LARGE_FERN_LOWER, LARGE_FERN_UPPER, LIGHT_GRAY_CONCRETE, MUD,
+    OAK_LEAVES, OAK_PLANKS, POTATOES, RED_FLOWER, SAND, SANDSTONE, SMOOTH_STONE, STONE,
+    STONE_BRICKS, TALL_GRASS_BOTTOM, TALL_GRASS_TOP, TUFF, WATER, WHEAT, WHITE_CONCRETE,
+    WHITE_FLOWER, YELLOW_FLOWER,
 };
 use crate::coordinate_system::cartesian::{XZBBox, XZPoint};
 use crate::element_processing::tree;
@@ -729,8 +730,13 @@ pub fn generate_ground_layer(
                                     land_cover::LC_TREE_COVER
                                         if slope <= 4 && ground_allows_trees =>
                                     {
+                                        // Doubled tree density (1/15 vs 1/30) and a
+                                        // richer undergrowth band so a forest tile
+                                        // doesn't read as half-empty grass. Trees
+                                        // still respect the building-footprint
+                                        // mask so they don't grow inside houses.
                                         let choice = rng.random_range(0..30);
-                                        if choice == 0 {
+                                        if choice <= 1 {
                                             tree::Tree::create(
                                                 editor,
                                                 (x, 1, z),
@@ -738,7 +744,7 @@ pub fn generate_ground_layer(
                                             );
                                         } else if ground_is_natural {
                                             // Undergrowth only on natural surfaces
-                                            if choice == 1 {
+                                            if choice == 2 {
                                                 let flower = [
                                                     RED_FLOWER,
                                                     BLUE_FLOWER,
@@ -753,7 +759,17 @@ pub fn generate_ground_layer(
                                                     None,
                                                     None,
                                                 );
-                                            } else if choice <= 13 {
+                                            } else if choice == 3 {
+                                                // Forest-floor fern
+                                                editor.set_block_absolute(
+                                                    FERN,
+                                                    x,
+                                                    ground_y + 1,
+                                                    z,
+                                                    None,
+                                                    None,
+                                                );
+                                            } else if choice <= 18 {
                                                 editor.set_block_absolute(
                                                     GRASS,
                                                     x,
@@ -766,8 +782,14 @@ pub fn generate_ground_layer(
                                         }
                                     }
                                     land_cover::LC_SHRUBLAND if ground_is_natural => {
+                                        // Bushes are the defining feature of
+                                        // shrubland, but the previous 2% rate
+                                        // made the cover read mostly as bare
+                                        // grass. Triple it and add ferns +
+                                        // tall grass so the tile actually
+                                        // looks like overgrown shrubs.
                                         let choice = rng.random_range(0..100);
-                                        if choice < 2 {
+                                        if choice < 6 {
                                             editor.set_block_absolute(
                                                 OAK_LEAVES,
                                                 x,
@@ -776,31 +798,16 @@ pub fn generate_ground_layer(
                                                 None,
                                                 None,
                                             );
-                                        } else if choice < 30 {
+                                        } else if choice < 11 {
                                             editor.set_block_absolute(
-                                                GRASS,
+                                                FERN,
                                                 x,
                                                 ground_y + 1,
                                                 z,
                                                 None,
                                                 None,
                                             );
-                                        }
-                                    }
-                                    land_cover::LC_GRASSLAND if ground_is_natural => {
-                                        // Short grass on grassland (~55%)
-                                        let choice = rng.random_range(0..100);
-                                        if choice < 50 {
-                                            editor.set_block_absolute(
-                                                GRASS,
-                                                x,
-                                                ground_y + 1,
-                                                z,
-                                                None,
-                                                None,
-                                            );
-                                        } else if choice < 55 {
-                                            // Occasional tall grass
+                                        } else if choice < 16 {
                                             editor.set_block_absolute(
                                                 TALL_GRASS_BOTTOM,
                                                 x,
@@ -817,7 +824,70 @@ pub fn generate_ground_layer(
                                                 None,
                                                 None,
                                             );
-                                        } else if choice == 55 {
+                                        } else if choice < 50 {
+                                            editor.set_block_absolute(
+                                                GRASS,
+                                                x,
+                                                ground_y + 1,
+                                                z,
+                                                None,
+                                                None,
+                                            );
+                                        }
+                                    }
+                                    land_cover::LC_GRASSLAND if ground_is_natural => {
+                                        // Wider variety on grassland: shorter
+                                        // grass, more frequent tall grass +
+                                        // large ferns, more flowers across
+                                        // the four colour variants. Cap of
+                                        // 65% keeps ~35% of cells bare so the
+                                        // tile still reads as field rather
+                                        // than meadow soup.
+                                        let choice = rng.random_range(0..100);
+                                        if choice < 50 {
+                                            editor.set_block_absolute(
+                                                GRASS,
+                                                x,
+                                                ground_y + 1,
+                                                z,
+                                                None,
+                                                None,
+                                            );
+                                        } else if choice < 58 {
+                                            editor.set_block_absolute(
+                                                TALL_GRASS_BOTTOM,
+                                                x,
+                                                ground_y + 1,
+                                                z,
+                                                None,
+                                                None,
+                                            );
+                                            editor.set_block_absolute(
+                                                TALL_GRASS_TOP,
+                                                x,
+                                                ground_y + 2,
+                                                z,
+                                                None,
+                                                None,
+                                            );
+                                        } else if choice < 60 {
+                                            editor.set_block_absolute(
+                                                LARGE_FERN_LOWER,
+                                                x,
+                                                ground_y + 1,
+                                                z,
+                                                None,
+                                                None,
+                                            );
+                                            editor.set_block_absolute(
+                                                LARGE_FERN_UPPER,
+                                                x,
+                                                ground_y + 2,
+                                                z,
+                                                None,
+                                                None,
+                                            );
+                                        } else if choice < 65 {
                                             let flower = [
                                                 RED_FLOWER,
                                                 BLUE_FLOWER,
