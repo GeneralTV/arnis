@@ -1346,6 +1346,124 @@ pub fn get_fallback_building_block() -> Block {
     fallback_options[rng.random_range(0..fallback_options.len())]
 }
 
+// ============================================================================
+// Roof material / colour helpers (deterministic)
+// ============================================================================
+
+/// Color-keyed roof block palettes, mirroring the wall version but tuned for
+/// realistic roof tiles. Closest match (RGB distance) wins.
+static DEFINED_ROOF_COLORS: &[ColorBlockMapping] = &[
+    // Reds / terracotta tile
+    ((178, 34, 34), &[BRICK, RED_TERRACOTTA]),
+    ((192, 64, 0), &[BRICK, RED_TERRACOTTA, BROWN_TERRACOTTA]),
+    ((233, 107, 57), &[BRICK, RED_TERRACOTTA]),
+    // Browns / wood / shingle
+    ((128, 64, 0), &[BROWN_TERRACOTTA, MUD_BRICKS, BRICK]),
+    (
+        (101, 67, 33),
+        &[BROWN_TERRACOTTA, DARK_OAK_PLANKS, MUD_BRICKS],
+    ),
+    (
+        (57, 41, 35),
+        &[BROWN_TERRACOTTA, BLACK_TERRACOTTA, MUD_BRICKS],
+    ),
+    // Greys / slate / concrete
+    (
+        (80, 80, 80),
+        &[DEEPSLATE_BRICKS, GRAY_CONCRETE, POLISHED_DEEPSLATE],
+    ),
+    (
+        (128, 128, 128),
+        &[GRAY_CONCRETE, SMOOTH_STONE, POLISHED_ANDESITE],
+    ),
+    (
+        (192, 192, 192),
+        &[LIGHT_GRAY_CONCRETE, SMOOTH_STONE, POLISHED_ANDESITE],
+    ),
+    // Blacks
+    ((0, 0, 0), &[BLACK_TERRACOTTA, BLACKSTONE, DEEPSLATE_BRICKS]),
+    // Greens (oxidized copper / mossy)
+    ((0, 128, 0), &[GREEN_CONCRETE, MOSS_BLOCK]),
+    ((78, 139, 116), &[GREEN_CONCRETE, MOSS_BLOCK]),
+    // Blues
+    ((0, 0, 128), &[BLUE_TERRACOTTA, BLUE_CONCRETE]),
+    ((0, 0, 255), &[BLUE_TERRACOTTA, LIGHT_BLUE_TERRACOTTA]),
+    // Whites
+    (
+        (255, 255, 255),
+        &[WHITE_CONCRETE, QUARTZ_BLOCK, SMOOTH_QUARTZ],
+    ),
+    // Yellows / sand
+    (
+        (255, 200, 0),
+        &[SANDSTONE, SMOOTH_SANDSTONE, YELLOW_CONCRETE],
+    ),
+    ((187, 173, 142), &[SANDSTONE, SMOOTH_SANDSTONE]),
+];
+
+/// Deterministic roof block selection from an explicit RGB colour
+/// (typically parsed from OSM `roof:colour`). Picks the closest entry
+/// in the roof palette by RGB distance.
+pub fn get_roof_block_for_color_with_rng(color: RGBTuple, rng: &mut impl rand::Rng) -> Block {
+    let closest = DEFINED_ROOF_COLORS
+        .iter()
+        .min_by_key(|(c, _)| crate::colors::rgb_distance(&color, c));
+
+    if let Some((_, options)) = closest {
+        options[rng.random_range(0..options.len())]
+    } else {
+        BRICK
+    }
+}
+
+/// Deterministic roof block selection from an OSM `roof:material` value.
+/// Recognised values follow https://wiki.openstreetmap.org/wiki/Key:roof:material.
+/// Returns `None` for unknown materials so callers can fall back to a
+/// category default.
+pub fn get_roof_block_for_material_with_rng(
+    material: &str,
+    rng: &mut impl rand::Rng,
+) -> Option<Block> {
+    let normalized = material.trim().to_ascii_lowercase();
+
+    let options: &[Block] = match normalized.as_str() {
+        // Clay / ceramic tiles
+        "tile" | "tiles" | "roof_tiles" | "ceramic" | "clay_tiles" => {
+            &[BRICK, RED_TERRACOTTA, BROWN_TERRACOTTA]
+        }
+        // Slate
+        "slate" => &[DEEPSLATE_BRICKS, POLISHED_DEEPSLATE, GRAY_CONCRETE],
+        // Metal
+        "metal" | "tin" | "steel" | "aluminium" | "aluminum" | "zinc" => {
+            &[IRON_BLOCK, LIGHT_GRAY_CONCRETE, GRAY_CONCRETE]
+        }
+        // Copper / oxidized copper
+        "copper" => &[BROWN_TERRACOTTA, ORANGE_TERRACOTTA],
+        // Glass (greenhouses, atria)
+        "glass" => &[GLASS, WHITE_STAINED_GLASS, LIGHT_GRAY_STAINED_GLASS],
+        // Concrete
+        "concrete" | "reinforced_concrete" => {
+            &[SMOOTH_STONE, LIGHT_GRAY_CONCRETE, POLISHED_ANDESITE]
+        }
+        // Wood / shingle
+        "wood" | "wooden" | "shingles" | "wood_shingles" | "asphalt_shingle" | "shingle" => {
+            &[DARK_OAK_PLANKS, SPRUCE_PLANKS, OAK_PLANKS, BROWN_TERRACOTTA]
+        }
+        // Thatch / grass / reed
+        "thatch" | "grass" | "reed" | "straw" => &[HAY_BALE, MOSS_BLOCK],
+        // Eternit / asbestos / bitumen / tar / gravel — typically dark flat surfaces
+        "eternit" | "asbestos" | "bitumen" | "tar_paper" | "tar" | "gravel" | "asphalt" => {
+            &[BLACKSTONE, DEEPSLATE_BRICKS, GRAY_CONCRETE]
+        }
+        // Plastic / synthetic — light-coloured panels
+        "plastic" | "polycarbonate" | "fiberglass" => &[LIGHT_GRAY_CONCRETE, WHITE_CONCRETE],
+        // Stone
+        "stone" => &[STONE_BRICKS, COBBLESTONE, MOSSY_COBBLESTONE],
+        _ => return None,
+    };
+    Some(options[rng.random_range(0..options.len())])
+}
+
 // Function to get a random castle wall block
 pub fn get_castle_wall_block() -> Block {
     use rand::Rng;
