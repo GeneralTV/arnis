@@ -231,8 +231,19 @@ pub fn generate_railways(
                             let top = (lateral_ground - current_ground)
                                 .min(cutting_max_height)
                                 .max(1);
+                            // Use `set_block_absolute` with the rail's
+                            // own ground level — `set_block` would add
+                            // the *lateral* ground level here, putting
+                            // AIR above the hill instead of into it.
                             for h in 1..=top {
-                                editor.set_block(AIR, lx, h, lz, None, Some(&[]));
+                                editor.set_block_absolute(
+                                    AIR,
+                                    lx,
+                                    current_ground + h,
+                                    lz,
+                                    None,
+                                    Some(&[]),
+                                );
                             }
                         }
                     }
