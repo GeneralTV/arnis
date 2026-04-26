@@ -1,4 +1,5 @@
 use crate::coordinate_system::geographic::LLBBox;
+use crate::target_version::TargetVersion;
 use clap::{ArgAction, Parser};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -91,6 +92,22 @@ pub struct Args {
     /// Print generation-only timing to stderr (excludes data fetching)
     #[arg(long, hide = true)]
     pub benchmark: bool,
+
+    /// Target Minecraft Java version. `latest` (default) writes the
+    /// current 1.21.x format. `1.16.5` switches the writer to a
+    /// 1.16.5-compatible block palette and Y=0..255 world height.
+    /// Accepts `latest`, `1.16.5`, `java-1.16.5`, `1_16_5`.
+    ///
+    /// Note: the full legacy Anvil chunk schema is implemented in a
+    /// follow-up PR; this PR adds the flag, the block-name remapping
+    /// table, the DataVersion swap, and the Y clamp.
+    #[arg(
+        long = "target-java-version",
+        alias = "target",
+        value_parser = TargetVersion::parse_cli,
+        default_value = "latest",
+    )]
+    pub target_java_version: TargetVersion,
 }
 
 /// Validates CLI arguments after parsing.
