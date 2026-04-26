@@ -6,6 +6,7 @@ use super::common::{Chunk, ChunkToModify, Section};
 use super::WorldEditor;
 use crate::block_definitions::GRASS_BLOCK;
 use crate::progress::emit_gui_progress_update;
+use crate::target_version::TargetVersion;
 use colored::Colorize;
 use fastanvil::Region;
 use fastnbt::{LongArray, Value};
@@ -20,6 +21,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// Minecraft 1.21.1 data version for chunk format identification.
+/// Used as a fallback when no explicit target is supplied; the
+/// per-target value comes from [`TargetVersion::data_version`].
 const DATA_VERSION: i32 = 3955;
 
 /// Cached base chunk sections (grass at Y=-62)
@@ -74,6 +77,7 @@ impl<'a> WorldEditor<'a> {
     pub(super) fn create_base_chunk(
         abs_chunk_x: i32,
         abs_chunk_z: i32,
+        target: TargetVersion,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         // Use cached sections (computed once on first call)
         let sections = get_base_chunk_sections();
@@ -87,7 +91,7 @@ impl<'a> WorldEditor<'a> {
             other: FnvHashMap::default(),
         };
 
-        let chunk_nbt = create_chunk_nbt(&chunk_data);
+        let chunk_nbt = create_chunk_nbt(&chunk_data, target);
 
         let mut ser_buffer = Vec::with_capacity(8192);
         fastnbt::to_writer(&mut ser_buffer, &chunk_nbt)?;
@@ -198,7 +202,7 @@ impl<'a> WorldEditor<'a> {
                     other: chunk_to_modify.other.clone(),
                 };
 
-                let chunk_nbt = create_chunk_nbt(&chunk);
+                let chunk_nbt = create_chunk_nbt(&chunk, self.target_version);
                 ser_buffer.clear();
                 fastnbt::to_writer(&mut ser_buffer, &chunk_nbt)?;
                 region.write_chunk(chunk_x as usize, chunk_z as usize, &ser_buffer)?;
@@ -216,7 +220,8 @@ impl<'a> WorldEditor<'a> {
 
                 // If chunk doesn't exist, create it with base layer
                 if !chunk_exists {
-                    let ser_buffer = Self::create_base_chunk(abs_chunk_x, abs_chunk_z)?;
+                    let ser_buffer =
+                        Self::create_base_chunk(abs_chunk_x, abs_chunk_z, self.target_version)?;
                     region.write_chunk(chunk_x as usize, chunk_z as usize, &ser_buffer)?;
                 }
             }
@@ -260,7 +265,7 @@ fn get_entity_coords(entity: &HashMap<String, Value>) -> Option<(i32, i32, i32)>
 /// DataVersion, Status, yPos, Heightmaps, biomes, structures, etc.
 /// Section range is determined dynamically: at minimum the vanilla range
 /// (Y=-4 to Y=19), extended upward/downward to cover any sections with content.
-fn create_chunk_nbt(chunk: &Chunk) -> HashMap<String, Value> {
+fn create_chunk_nbt(chunk: &Chunk, target: TargetVersion) -> HashMap<String, Value> {
     // Index existing sections by Y for quick lookup
     let section_map: HashMap<i8, usize> = chunk
         .sections
@@ -291,7 +296,7 @@ fn create_chunk_nbt(chunk: &Chunk) -> HashMap<String, Value> {
     let sections: Vec<Value> = (min_section_y..=max_section_y)
         .map(|y| {
             let mut section_nbt = if let Some(&idx) = section_map.get(&y) {
-                build_section_value(&chunk.sections[idx])
+                build_section_value(&chunk.sections[idx], target)
             } else {
                 // Empty air section
                 HashMap::from([
@@ -321,8 +326,9 @@ fn create_chunk_nbt(chunk: &Chunk) -> HashMap<String, Value> {
     let post_processing: Vec<Value> = (0..sections.len()).map(|_| Value::List(vec![])).collect();
 
     // Build root-level chunk NBT (modern format — no Level wrapper)
+    let _ = DATA_VERSION; // kept for reference; effective value comes from `target`.
     let mut root = HashMap::from([
-        ("DataVersion".to_string(), Value::Int(DATA_VERSION)),
+        ("DataVersion".to_string(), Value::Int(target.data_version())),
         ("xPos".to_string(), Value::Int(chunk.x_pos)),
         ("yPos".to_string(), Value::Int(min_section_y as i32)),
         ("zPos".to_string(), Value::Int(chunk.z_pos)),
@@ -358,7 +364,7 @@ fn create_chunk_nbt(chunk: &Chunk) -> HashMap<String, Value> {
 }
 
 /// Build a section Value from a Section struct.
-fn build_section_value(section: &Section) -> HashMap<String, Value> {
+fn build_section_value(section: &Section, target: TargetVersion) -> HashMap<String, Value> {
     let mut block_states = HashMap::from([(
         "palette".to_string(),
         Value::List(
@@ -367,8 +373,9 @@ fn build_section_value(section: &Section) -> HashMap<String, Value> {
                 .palette
                 .iter()
                 .map(|item| {
+                    let name = remap_palette_name(&item.name, target);
                     let mut palette_item =
-                        HashMap::from([("Name".to_string(), Value::String(item.name.clone()))]);
+                        HashMap::from([("Name".to_string(), Value::String(name))]);
                     if let Some(props) = &item.properties {
                         palette_item.insert("Properties".to_string(), props.clone());
                     }
@@ -585,5 +592,78 @@ fn value_to_i32(value: &Value) -> Option<i32> {
         Value::Float(v) => Some(*v as i32),
         Value::Double(v) => Some(*v as i32),
         _ => None,
+    }
+}
+
+/// Apply the target version's block-name remap table to a palette
+/// entry name. Splits the optional `minecraft:` namespace, runs the
+/// local part through [`TargetVersion::map_block_name`], and rebuilds
+/// the namespaced name.
+fn remap_palette_name(raw: &str, target: TargetVersion) -> String {
+    let (ns, local) = match raw.split_once(':') {
+        Some((ns, local)) => (ns, local),
+        None => ("minecraft", raw),
+    };
+    let mapped = target.map_block_name(local);
+    if mapped == local && ns == "minecraft" {
+        return raw.to_string();
+    }
+    format!("{ns}:{mapped}")
+}
+
+#[cfg(test)]
+mod target_remap_tests {
+    use super::*;
+
+    #[test]
+    fn latest_target_keeps_names_intact() {
+        assert_eq!(
+            remap_palette_name("minecraft:deepslate", TargetVersion::Latest),
+            "minecraft:deepslate"
+        );
+        assert_eq!(
+            remap_palette_name("minecraft:tinted_glass", TargetVersion::Latest),
+            "minecraft:tinted_glass"
+        );
+    }
+
+    #[test]
+    fn legacy_target_remaps_known_names() {
+        assert_eq!(
+            remap_palette_name("minecraft:deepslate", TargetVersion::Java1_16_5),
+            "minecraft:cobblestone"
+        );
+        assert_eq!(
+            remap_palette_name("minecraft:tinted_glass", TargetVersion::Java1_16_5),
+            "minecraft:gray_stained_glass"
+        );
+        assert_eq!(
+            remap_palette_name("minecraft:dirt_path", TargetVersion::Java1_16_5),
+            "minecraft:grass_path"
+        );
+        assert_eq!(
+            remap_palette_name("minecraft:short_grass", TargetVersion::Java1_16_5),
+            "minecraft:grass"
+        );
+    }
+
+    #[test]
+    fn legacy_target_passes_through_known_1_16_blocks() {
+        assert_eq!(
+            remap_palette_name("minecraft:stone", TargetVersion::Java1_16_5),
+            "minecraft:stone"
+        );
+        assert_eq!(
+            remap_palette_name("minecraft:oak_planks", TargetVersion::Java1_16_5),
+            "minecraft:oak_planks"
+        );
+    }
+
+    #[test]
+    fn unnamespaced_input_is_namespaced_back() {
+        assert_eq!(
+            remap_palette_name("deepslate", TargetVersion::Java1_16_5),
+            "minecraft:cobblestone"
+        );
     }
 }

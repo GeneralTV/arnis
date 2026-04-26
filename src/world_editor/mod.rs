@@ -138,6 +138,10 @@ pub struct WorldEditor<'a> {
     bedrock_spawn_point: Option<(i32, i32)>,
     #[cfg(feature = "bedrock")]
     bedrock_extend_height: bool,
+    /// Target Minecraft Java version. Controls DataVersion, world
+    /// height clamp, and the post-1.16.5 → 1.16.5 block-name
+    /// substitution table.
+    target_version: crate::target_version::TargetVersion,
 }
 
 impl<'a> WorldEditor<'a> {
@@ -160,13 +164,14 @@ impl<'a> WorldEditor<'a> {
             bedrock_spawn_point: None,
             #[cfg(feature = "bedrock")]
             bedrock_extend_height: false,
+            target_version: crate::target_version::TargetVersion::default(),
         }
     }
 
     /// Creates a new WorldEditor with a specific format and optional level name.
     ///
     /// Used by GUI mode to support both Java and Bedrock formats.
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub fn new_with_format_and_name(
         world_dir: PathBuf,
         xzbbox: &'a XZBBox,
@@ -179,6 +184,7 @@ impl<'a> WorldEditor<'a> {
             (i32, i32),
         >,
         #[cfg_attr(not(feature = "bedrock"), allow(unused_variables))] bedrock_extend_height: bool,
+        target_version: crate::target_version::TargetVersion,
     ) -> Self {
         Self {
             world_dir,
@@ -194,7 +200,15 @@ impl<'a> WorldEditor<'a> {
             bedrock_spawn_point,
             #[cfg(feature = "bedrock")]
             bedrock_extend_height,
+            target_version,
         }
+    }
+
+    /// Selected target Minecraft Java version. Defaults to
+    /// [`crate::target_version::TargetVersion::Latest`].
+    #[allow(dead_code)]
+    pub fn target_version(&self) -> crate::target_version::TargetVersion {
+        self.target_version
     }
 
     /// Sets the ground reference for elevation-based block placement
@@ -846,6 +860,15 @@ impl<'a> WorldEditor<'a> {
     ) {
         // Check if coordinates are within bounds
         if !self.xzbbox.contains(&XZPoint::new(x, z)) {
+            return;
+        }
+
+        // Drop block placements that fall outside the target Java
+        // version's vertical range. Modern targets accept Y=-64..319;
+        // legacy 1.16.5 only accepts Y=0..255. Building / terrain code
+        // is allowed to be version-agnostic — the editor enforces the
+        // bound centrally so callers don't have to.
+        if absolute_y < self.target_version.min_y() || absolute_y > self.target_version.max_y() {
             return;
         }
 

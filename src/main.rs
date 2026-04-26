@@ -25,6 +25,7 @@ mod overture;
 #[cfg(feature = "gui")]
 mod progress;
 mod retrieve_data;
+mod target_version;
 #[cfg(feature = "gui")]
 mod telemetry;
 #[cfg(test)]
