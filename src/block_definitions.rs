@@ -1292,11 +1292,20 @@ static DEFINED_COLORS: &[ColorBlockMapping] = &[
     ((191, 147, 42), &[SMOOTH_SANDSTONE, SANDSTONE, SMOOTH_STONE]),
 ];
 
-// Function to randomly select building wall block with alternatives
+// Function to randomly select building wall block with alternatives (non-deterministic, for backwards compatibility)
 pub fn get_building_wall_block_for_color(color: RGBTuple) -> Block {
     use rand::Rng;
     let mut rng = rand::rng();
+    get_building_wall_block_for_color_with_rng(color, &mut rng)
+}
 
+/// Deterministic colored building wall block selection using provided RNG.
+/// Use this when generating buildings with element-seeded RNG so the same
+/// element always produces the same wall block, regardless of processing order.
+pub fn get_building_wall_block_for_color_with_rng(
+    color: RGBTuple,
+    rng: &mut impl rand::Rng,
+) -> Block {
     // Find the closest color match
     let closest_color = DEFINED_COLORS
         .iter()
@@ -1306,15 +1315,19 @@ pub fn get_building_wall_block_for_color(color: RGBTuple) -> Block {
         options[rng.random_range(0..options.len())]
     } else {
         // This should never happen, but fallback just in case
-        get_fallback_building_block()
+        get_fallback_building_block_with_rng(rng)
     }
 }
 
-// Function to get a random fallback building block when no color attribute is specified
+// Function to get a random fallback building block when no color attribute is specified (non-deterministic)
 pub fn get_fallback_building_block() -> Block {
     use rand::Rng;
     let mut rng = rand::rng();
+    get_fallback_building_block_with_rng(&mut rng)
+}
 
+/// Deterministic fallback building block selection using provided RNG.
+pub fn get_fallback_building_block_with_rng(rng: &mut impl rand::Rng) -> Block {
     let fallback_options = [
         BLACKSTONE,
         BLACK_TERRACOTTA,
@@ -1346,11 +1359,15 @@ pub fn get_fallback_building_block() -> Block {
     fallback_options[rng.random_range(0..fallback_options.len())]
 }
 
-// Function to get a random castle wall block
+// Function to get a random castle wall block (non-deterministic, for backwards compatibility)
 pub fn get_castle_wall_block() -> Block {
     use rand::Rng;
     let mut rng = rand::rng();
+    get_castle_wall_block_with_rng(&mut rng)
+}
 
+/// Deterministic castle wall block selection using provided RNG.
+pub fn get_castle_wall_block_with_rng(rng: &mut impl rand::Rng) -> Block {
     let castle_wall_options = [
         STONE_BRICKS,
         CHISELED_STONE_BRICKS,

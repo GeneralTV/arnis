@@ -1126,7 +1126,7 @@ fn determine_wall_block(
 ) -> Block {
     // Historic castles have their own special treatment
     if element.tags.get("historic") == Some(&"castle".to_string()) {
-        return get_castle_wall_block();
+        return get_castle_wall_block_with_rng(rng);
     }
 
     // Try to get wall block from building:colour tag first.
@@ -1134,7 +1134,7 @@ fn determine_wall_block(
     if category != BuildingCategory::GlassySkyscraper {
         if let Some(building_colour) = element.tags.get("building:colour") {
             if let Some(rgb) = color_text_to_rgb_tuple(building_colour) {
-                return get_building_wall_block_for_color(rgb);
+                return get_building_wall_block_for_color_with_rng(rgb, rng);
             }
         }
     }
@@ -1212,7 +1212,7 @@ fn get_wall_block_for_category(category: BuildingCategory, rng: &mut impl Rng) -
             ];
             GLASSY_WALL_OPTIONS[rng.random_range(0..GLASSY_WALL_OPTIONS.len())]
         }
-        BuildingCategory::Default => get_fallback_building_block(),
+        BuildingCategory::Default => get_fallback_building_block_with_rng(rng),
     }
 }
 
