@@ -2,6 +2,7 @@ pub mod advertising;
 pub mod amenities;
 pub mod barriers;
 pub mod bridges;
+pub mod building_semantic;
 pub mod buildings;
 pub mod doors;
 pub mod emergency;
