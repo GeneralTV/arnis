@@ -413,7 +413,14 @@ fn hotel_cell(xl: i32, zl: i32) -> (char, char) {
     } else {
         ' '
     };
-    let c2 = if c1 == 'D' { 'D' } else { ' ' };
+    // Walls and doors must be 2 blocks tall so the layer-2 block fills
+    // the eye-level row between layer-1 (floor_y + 1) and the wall-
+    // extension pass (which starts at floor_y + 3).
+    let c2 = match c1 {
+        'D' => 'D',
+        'W' => 'W',
+        _ => ' ',
+    };
     (c1, c2)
 }
 
@@ -433,7 +440,11 @@ fn school_cell(xl: i32, zl: i32) -> (char, char) {
     } else {
         ' '
     };
-    let c2 = if c1 == 'D' { 'D' } else { ' ' };
+    let c2 = match c1 {
+        'D' => 'D',
+        'W' => 'W',
+        _ => ' ',
+    };
     (c1, c2)
 }
 
@@ -456,7 +467,11 @@ fn hospital_cell(xl: i32, zl: i32) -> (char, char) {
     } else {
         ' '
     };
-    let c2 = if c1 == 'D' { 'D' } else { ' ' };
+    let c2 = match c1 {
+        'D' => 'D',
+        'W' => 'W',
+        _ => ' ',
+    };
     (c1, c2)
 }
 
