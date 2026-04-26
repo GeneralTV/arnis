@@ -2180,25 +2180,65 @@ fn generate_residential_window_decorations(
             // Walk the bresenham points of this wall segment
             let points =
                 bresenham_line(x1, config.start_y_offset, z1, x2, config.start_y_offset, z2);
+            let seg_len = points.len() as i32;
 
-            for (bx, _, bz) in &points {
+            // Per-segment bay layout (matches `determine_wall_block_at_position`).
+            // For residential / house buildings `bay_width == 5` so we have:
+            //   bay_pos 0       → bay boundary
+            //   bay_pos 1       → wall left of window  (left flank — shutter cell)
+            //   bay_pos 2       → window               (sill / balcony cell)
+            //   bay_pos 3       → wall right of window (right flank — shutter cell)
+            //   bay_pos 4       → other wall
+            // Decorations key off `local_t` and the per-bay slot rather than
+            // the previous global `(bx + bz) % 6` grid so they stay aligned
+            // with the windows produced by the new facade-bay window logic.
+            let bay_width = bay_width_for_category(config.category);
+            let window_center = bay_width / 2;
+            let flank_left = (window_center - 1).rem_euclid(bay_width);
+            let flank_right = (window_center + 1).rem_euclid(bay_width);
+
+            for (idx, (bx, _, bz)) in points.iter().enumerate() {
                 let bx = *bx;
                 let bz = *bz;
+                let local_t = idx as i32;
+                let is_corner = seg_len <= 1 || local_t == 0 || local_t == seg_len - 1;
 
-                // Skip decorations at passage openings
+                // Skip decorations at corners (no window there) and passage openings.
+                if is_corner {
+                    continue;
+                }
                 if building_passages.contains(bx, bz) {
                     continue;
                 }
 
-                let mod6 = ((bx + bz) % 6 + 6) % 6; // always 0..5
+                let bay_pos = local_t.rem_euclid(bay_width);
+                let is_left_flank = bay_pos == flank_left;
+                let is_right_flank = bay_pos == flank_right;
+                let is_window_cell = bay_pos == window_center;
 
                 // --- Shutters ---
-                // mod6 == 3 or 5 are the wall blocks flanking a window strip.
-                // Both sides share the same roll (seeded on window centre).
-                if mod6 == 3 || mod6 == 5 {
-                    let centre_sum = if mod6 == 3 { bx + bz - 2 } else { bx + bz + 2 };
+                // Placed on the cells directly flanking the window. Both
+                // shutters of the same window share a deterministic seed
+                // (the window cell's world coordinates) so left/right always
+                // appear together.
+                if is_left_flank || is_right_flank {
+                    // The window cell is exactly one bresenham step away
+                    // along this segment. Use the segment's points array
+                    // directly so we don't need to know the tangent direction.
+                    let window_idx = if is_left_flank {
+                        local_t + 1
+                    } else {
+                        local_t - 1
+                    };
+                    if window_idx < 0 || window_idx >= seg_len {
+                        // Window cell would fall outside this segment
+                        // (shouldn't happen mid-segment thanks to the
+                        // is_corner guard above, but defend anyway).
+                        continue;
+                    }
+                    let (wx, _, wz) = points[window_idx as usize];
                     let shutter_roll =
-                        coord_rng(centre_sum, centre_sum, element.id).random_range(0u32..100);
+                        coord_rng(wx + wz, wx + wz, element.id).random_range(0u32..100);
                     if shutter_roll < 25 {
                         for h in (config.start_y_offset + 1)
                             ..=(config.start_y_offset + config.building_height)
@@ -2219,12 +2259,9 @@ fn generate_residential_window_decorations(
                 }
 
                 // --- Window Sills / Balconies ---
-                // Window columns are mod6 ∈ {0, 1, 2}.
-                // At each floor's floor_row==0 row we decide once per window
-                // whether this floor gets a sill OR a balcony (mutually
-                // exclusive).  The decision is shared across all three
-                // columns via a seed derived from the window centre.
-                if mod6 < 3 {
+                // Single-cell window per bay, so sills and balconies live on
+                // the one window cell and are mutually exclusive per floor.
+                if is_window_cell {
                     // Stop 3 rows before the top so every sill has a
                     // full window (h+1..h+3) above it, avoids placing
                     // sills at the roof line.
@@ -2233,12 +2270,8 @@ fn generate_residential_window_decorations(
                         if config.floor_row(h) == 0 {
                             let floor_idx = h / 4;
 
-                            // Shared roll seeded from the window centre.
-                            let centre_sum = match mod6 {
-                                0 => bx + bz + 1,
-                                1 => bx + bz,
-                                _ => bx + bz - 1,
-                            };
+                            // Shared roll seeded from the window centre coords.
+                            let centre_sum = bx + bz;
                             let decoration_roll = coord_rng(
                                 centre_sum.wrapping_add(floor_idx * 3),
                                 centre_sum.wrapping_add(floor_idx * 5),
@@ -2264,12 +2297,10 @@ fn generate_residential_window_decorations(
 
                                 let mut pot_rng =
                                     coord_rng(bx, bz.wrapping_add(floor_idx), element.id);
-                                let pot_here = if mod6 == 1 {
-                                    pot_rng.random_range(0u32..100) < 70
-                                } else {
-                                    pot_rng.random_range(0u32..100) < 25
-                                };
-                                if pot_here {
+                                // Single-cell window — same probability as
+                                // the old centre column; no edge column to
+                                // halve the chance for.
+                                if pot_rng.random_range(0u32..100) < 70 {
                                     let plant = POTTED_PLANT_OPTIONS
                                         [pot_rng.random_range(0..POTTED_PLANT_OPTIONS.len())];
                                     editor.set_block_absolute(
@@ -2281,7 +2312,7 @@ fn generate_residential_window_decorations(
                                         None,
                                     );
                                 }
-                            } else if decoration_roll < 23 && mod6 == 1 {
+                            } else if decoration_roll < 23 {
                                 // ── Balcony (placed once from centre col) ──
                                 // A small 3-wide × 2-deep platform with
                                 // open-trapdoor railing around the outer
@@ -2599,6 +2630,11 @@ fn generate_wall_depth_features(
 
             let num_points = points.len();
 
+            // Per-segment bay layout (matches `determine_wall_block_at_position`)
+            // so depth decorations stay aligned with the windows produced by
+            // the facade-bay logic instead of the old `(bx + bz) % 6` grid.
+            let bay_width = bay_width_for_category(config.category);
+
             for (idx, (bx, _, bz)) in points.iter().enumerate() {
                 let bx = *bx;
                 let bz = *bz;
@@ -2609,7 +2645,9 @@ fn generate_wall_depth_features(
                     continue;
                 }
 
-                let mod6 = ((bx + bz) % 6 + 6) % 6;
+                let local_t = idx as i32;
+                let bay_pos = local_t.rem_euclid(bay_width);
+                let bay_index = local_t.div_euclid(bay_width);
 
                 match config.wall_depth_style {
                     WallDepthStyle::SubtlePilasters => {
@@ -2618,7 +2656,8 @@ fn generate_wall_depth_features(
                             config,
                             bx,
                             bz,
-                            mod6,
+                            bay_pos,
+                            bay_width,
                             out_nx,
                             out_nz,
                             height_reduction,
@@ -2630,7 +2669,8 @@ fn generate_wall_depth_features(
                             config,
                             bx,
                             bz,
-                            mod6,
+                            bay_pos,
+                            bay_width,
                             out_nx,
                             out_nz,
                             &sill_block,
@@ -2643,7 +2683,8 @@ fn generate_wall_depth_features(
                             config,
                             bx,
                             bz,
-                            mod6,
+                            bay_pos,
+                            bay_width,
                             out_nx,
                             out_nz,
                             facing,
@@ -2670,7 +2711,8 @@ fn generate_wall_depth_features(
                             config,
                             bx,
                             bz,
-                            mod6,
+                            bay_pos,
+                            bay_width,
                             out_nx,
                             out_nz,
                             facing,
@@ -2683,7 +2725,9 @@ fn generate_wall_depth_features(
                             config,
                             bx,
                             bz,
-                            mod6,
+                            bay_pos,
+                            bay_width,
+                            bay_index,
                             out_nx,
                             out_nz,
                             facing,
@@ -2696,7 +2740,8 @@ fn generate_wall_depth_features(
                             config,
                             bx,
                             bz,
-                            mod6,
+                            bay_pos,
+                            bay_width,
                             out_nx,
                             out_nz,
                             &sill_block,
@@ -2726,20 +2771,23 @@ fn generate_wall_depth_features(
     }
 }
 
-/// SubtlePilasters: thin wall_block columns at mod6==3 positions (between window groups)
-/// with an accent_block foundation course at ground level.
+/// SubtlePilasters: thin wall_block columns one block to the right of
+/// every window (between window groups in the new bay layout) with an
+/// accent_block foundation course at ground level.
 #[allow(clippy::too_many_arguments)]
 fn place_subtle_pilasters(
     editor: &mut WorldEditor,
     config: &BuildingConfig,
     bx: i32,
     bz: i32,
-    mod6: i32,
+    bay_pos: i32,
+    bay_width: i32,
     out_nx: i32,
     out_nz: i32,
     height_reduction: i32,
 ) {
-    if mod6 != 3 {
+    let flank_right = (bay_width / 2 + 1).rem_euclid(bay_width);
+    if bay_pos != flank_right {
         return;
     }
 
@@ -2764,15 +2812,17 @@ fn place_subtle_pilasters(
     }
 }
 
-/// ModernPillars: paired accent_block columns at mod6==3 and mod6==5,
-/// plus horizontal slab bands at floor-separation rows.
+/// ModernPillars: paired accent_block columns flanking each window
+/// (one cell either side of the window cell), plus horizontal slab bands
+/// at floor-separation rows on the window cell itself.
 #[allow(clippy::too_many_arguments)]
 fn place_modern_pillars(
     editor: &mut WorldEditor,
     config: &BuildingConfig,
     bx: i32,
     bz: i32,
-    mod6: i32,
+    bay_pos: i32,
+    bay_width: i32,
     out_nx: i32,
     out_nz: i32,
     sill_block: &BlockWithProperties,
@@ -2782,8 +2832,14 @@ fn place_modern_pillars(
     let lz = bz + out_nz;
     let top_h = config.start_y_offset + config.building_height - height_reduction;
 
-    // Pillar columns at edges of window bays
-    if mod6 == 3 || mod6 == 5 {
+    let window_center = bay_width / 2;
+    let flank_left = (window_center - 1).rem_euclid(bay_width);
+    let flank_right = (window_center + 1).rem_euclid(bay_width);
+    let is_flank = bay_pos == flank_left || bay_pos == flank_right;
+    let is_window = bay_pos == window_center;
+
+    // Pillar columns directly flanking the window cell
+    if is_flank {
         for h in (config.start_y_offset + 1)..=top_h {
             editor.set_block_absolute(
                 config.accent_block,
@@ -2797,9 +2853,8 @@ fn place_modern_pillars(
         return;
     }
 
-    // Horizontal slab bands at floor-level rows, for non-window positions
-    if mod6 >= 3 {
-        // Already handled by pillar columns above
+    // Horizontal slab bands only at the window cell itself.
+    if !is_window {
         return;
     }
 
@@ -2813,7 +2868,7 @@ fn place_modern_pillars(
         None,
     );
 
-    // Floor-level slab bands (skip the window center at mod6==1 for cleaner look)
+    // Floor-level slab bands at the window cell
     for h in (config.start_y_offset + 2)..=top_h {
         if config.floor_row(h) == 0 {
             editor.set_block_with_properties_absolute(
@@ -2828,15 +2883,17 @@ fn place_modern_pillars(
     }
 }
 
-/// InstitutionalBands: accent_block columns at mod6==3 + upside-down stair
-/// ledges at floor-separation rows for non-window positions.
+/// InstitutionalBands: accent_block columns to the right of each window
+/// (one per bay) + upside-down stair ledges at floor-separation rows on
+/// the window cells.
 #[allow(clippy::too_many_arguments)]
 fn place_institutional_bands(
     editor: &mut WorldEditor,
     config: &BuildingConfig,
     bx: i32,
     bz: i32,
-    mod6: i32,
+    bay_pos: i32,
+    bay_width: i32,
     out_nx: i32,
     out_nz: i32,
     facing: &str,
@@ -2846,8 +2903,11 @@ fn place_institutional_bands(
     let lz = bz + out_nz;
     let top_h = config.start_y_offset + config.building_height - height_reduction;
 
-    // Pillar columns
-    if mod6 == 3 {
+    let window_center = bay_width / 2;
+    let flank_right = (window_center + 1).rem_euclid(bay_width);
+
+    // Pillar columns once per bay, just to the right of each window.
+    if bay_pos == flank_right {
         for h in (config.start_y_offset + 1)..=top_h {
             editor.set_block_absolute(
                 config.accent_block,
@@ -2871,8 +2931,10 @@ fn place_institutional_bands(
         None,
     );
 
-    // Stair ledges at floor-separation rows (non-window positions only)
-    if mod6 >= 3 {
+    // Stair ledges at floor-separation rows: only at the window cell so
+    // the band reads as a sill / lintel under each window rather than a
+    // continuous belt across solid walls.
+    if bay_pos != window_center {
         return;
     }
     for h in (config.start_y_offset + 2)..=top_h {
@@ -2918,16 +2980,17 @@ fn place_industrial_beams(
     }
 }
 
-/// HistoricOrnate: wall_block columns at mod6==3, arched window headers
-/// (upside-down stairs at window-top rows), cornice at roof line, and
-/// foundation course.
+/// HistoricOrnate: wall_block columns to the right of each window,
+/// arched window headers (upside-down stairs at window-top rows on the
+/// window cell), cornice at the roof line, and a foundation course.
 #[allow(clippy::too_many_arguments)]
 fn place_historic_ornate(
     editor: &mut WorldEditor,
     config: &BuildingConfig,
     bx: i32,
     bz: i32,
-    mod6: i32,
+    bay_pos: i32,
+    bay_width: i32,
     out_nx: i32,
     out_nz: i32,
     facing: &str,
@@ -2938,8 +3001,11 @@ fn place_historic_ornate(
 
     let top_h = config.start_y_offset + config.building_height - height_reduction;
 
+    let window_center = bay_width / 2;
+    let flank_right = (window_center + 1).rem_euclid(bay_width);
+
     // Full-height pillar columns between window groups
-    if mod6 == 3 {
+    if bay_pos == flank_right {
         for h in (config.start_y_offset + 1)..=top_h {
             editor.set_block_absolute(
                 config.wall_block,
@@ -2975,8 +3041,9 @@ fn place_historic_ornate(
         None,
     );
 
-    // Arched window headers at window-top rows (floor_row == 3) for window-edge positions
-    if mod6 == 0 || mod6 == 2 {
+    // Arched window headers at window-top rows (floor_row == 3) on the
+    // window cell itself — single-block window in the new bay layout.
+    if bay_pos == window_center {
         for h in (config.start_y_offset + 2)..=top_h {
             if config.floor_row(h) == 3 {
                 let stair_bwp = make_upside_down_stair(config.wall_block, facing);
@@ -3006,7 +3073,7 @@ fn place_historic_ornate(
     }
 }
 
-/// ReligiousButtress: stepped buttresses at every other window group,
+/// ReligiousButtress: stepped buttresses at every other bay,
 /// plus cornice at roof line. Buttresses extend 2 blocks outward at the
 /// lower portion and 1 block outward for the full height.
 #[allow(clippy::too_many_arguments)]
@@ -3015,7 +3082,9 @@ fn place_religious_buttress(
     config: &BuildingConfig,
     bx: i32,
     bz: i32,
-    mod6: i32,
+    bay_pos: i32,
+    bay_width: i32,
+    bay_index: i32,
     out_nx: i32,
     out_nz: i32,
     facing: &str,
@@ -3025,9 +3094,9 @@ fn place_religious_buttress(
     let lz = bz + out_nz;
     let top_h = config.start_y_offset + config.building_height - height_reduction;
 
-    // Buttress at every other window group center (mod6==0)
-    let window_group = ((bx + bz) / 6).rem_euclid(2);
-    if mod6 == 0 && window_group == 0 {
+    // Buttress on the window cell every other bay along this segment.
+    let window_center = bay_width / 2;
+    if bay_pos == window_center && bay_index.rem_euclid(2) == 0 {
         let buttress_cutoff = config.start_y_offset + (config.building_height * 3 / 5);
 
         // Inner layer (outward+1): full height
@@ -3072,16 +3141,18 @@ fn place_religious_buttress(
     }
 }
 
-/// SkyscraperFins: continuous accent_block vertical fins at mod6==3,
-/// horizontal slab ledge bands at floor-separation rows for other positions,
-/// and a foundation course at ground level.
+/// SkyscraperFins: continuous accent_block vertical fins one cell to
+/// the right of each window, horizontal slab ledge bands at
+/// floor-separation rows for other positions, and a foundation course
+/// at ground level.
 #[allow(clippy::too_many_arguments)]
 fn place_skyscraper_fins(
     editor: &mut WorldEditor,
     config: &BuildingConfig,
     bx: i32,
     bz: i32,
-    mod6: i32,
+    bay_pos: i32,
+    bay_width: i32,
     out_nx: i32,
     out_nz: i32,
     sill_block: &BlockWithProperties,
@@ -3090,6 +3161,7 @@ fn place_skyscraper_fins(
     let lx = bx + out_nx;
     let lz = bz + out_nz;
     let top_h = config.start_y_offset + config.building_height - height_reduction;
+    let flank_right = (bay_width / 2 + 1).rem_euclid(bay_width);
 
     // Foundation course at ground level (all positions)
     editor.set_block_absolute(
@@ -3101,7 +3173,7 @@ fn place_skyscraper_fins(
         None,
     );
 
-    if mod6 == 3 {
+    if bay_pos == flank_right {
         // Vertical fin column (existing behavior)
         for h in (config.start_y_offset + 1)..=top_h {
             editor.set_block_absolute(
