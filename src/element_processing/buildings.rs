@@ -2230,10 +2230,15 @@ fn generate_residential_window_decorations(
                     } else {
                         local_t - 1
                     };
-                    if window_idx < 0 || window_idx >= seg_len {
-                        // Window cell would fall outside this segment
-                        // (shouldn't happen mid-segment thanks to the
-                        // is_corner guard above, but defend anyway).
+                    // Guard: window cell must be in-bounds AND not a corner.
+                    // `build_wall_ring` skips windows at corners, so a
+                    // shutter pointing at a corner cell would float beside
+                    // a solid wall. This happens when (seg_len - 2) %
+                    // bay_width == flank_left, e.g. seg_len ∈ {3, 8, 13, …}
+                    // for House (bay_width = 5).
+                    let window_is_corner =
+                        seg_len <= 1 || window_idx == 0 || window_idx == seg_len - 1;
+                    if window_idx < 0 || window_idx >= seg_len || window_is_corner {
                         continue;
                     }
                     let (wx, _, wz) = points[window_idx as usize];
