@@ -1724,6 +1724,140 @@ fn build_wall_ring(
     (current_building, corner_addup)
 }
 
+/// Scatters small landscaping (single-block trees, leaf bushes, ground
+/// cover ferns / grass) into the cells immediately around the building.
+///
+/// The placement is deterministic per `(x, z, element_id)` and uses
+/// `set_block_absolute(.., None, None)` so any existing block (road,
+/// building, sidewalk, fence, …) is left alone — only true air cells
+/// receive landscape blocks.
+///
+/// Each ring outward from the wall has a different probability:
+///
+/// * 1 cell out: trees / bushes are not placed (would clip the wall);
+///   ground cover only.
+/// * 2-3 cells out: small chance of a tree, larger chance of a bush.
+///
+/// Trees are 2-block oak logs with a 5-leaf cross at the top. They are
+/// only generated for buildings whose category typically has a yard
+/// (House, Residential, Farm, School, Office, Commercial, Hotel,
+/// Religious). Industrial / Warehouse / TallBuilding /
+/// ModernSkyscraper / GlassySkyscraper are skipped — they are typically
+/// surrounded by asphalt and a tree poking out of a parking lot is
+/// worse than no tree at all.
+fn generate_landscaping(
+    editor: &mut WorldEditor,
+    element: &ProcessedWay,
+    config: &BuildingConfig,
+    wall_outline: &[(i32, i32)],
+    args: &Args,
+) {
+    if !matches!(
+        config.category,
+        BuildingCategory::House
+            | BuildingCategory::Residential
+            | BuildingCategory::Farm
+            | BuildingCategory::School
+            | BuildingCategory::Office
+            | BuildingCategory::Commercial
+            | BuildingCategory::Hotel
+            | BuildingCategory::Religious
+    ) {
+        return;
+    }
+
+    if wall_outline.is_empty() {
+        return;
+    }
+
+    let (cx, cz) = match compute_building_centroid(&element.nodes) {
+        Some(c) => c,
+        None => return,
+    };
+
+    let abs_offset = config.abs_terrain_offset;
+
+    for &(wx, wz) in wall_outline {
+        let dx = wx - cx;
+        let dz = wz - cz;
+        if dx == 0 && dz == 0 {
+            continue;
+        }
+        let (nx, nz) = if dx.abs() >= dz.abs() {
+            (dx.signum(), 0)
+        } else {
+            (0, dz.signum())
+        };
+        if (nx, nz) == (0, 0) {
+            continue;
+        }
+
+        // Density tuned per category.  Houses are leafier; institutional
+        // / commercial buildings get sparser, more formal landscaping.
+        let (tree_threshold, bush_threshold, cover_threshold) = match config.category {
+            BuildingCategory::House | BuildingCategory::Residential | BuildingCategory::Farm => {
+                (0.06_f64, 0.18_f64, 0.34_f64)
+            }
+            BuildingCategory::School => (0.05_f64, 0.14_f64, 0.30_f64),
+            BuildingCategory::Office | BuildingCategory::Hotel | BuildingCategory::Commercial => {
+                (0.03_f64, 0.10_f64, 0.20_f64)
+            }
+            BuildingCategory::Religious => (0.04_f64, 0.12_f64, 0.24_f64),
+            _ => (0.0_f64, 0.0_f64, 0.0_f64),
+        };
+
+        // Pick the outward distance per wall cell deterministically:
+        // either 2 or 3 cells out.  This breaks up the linear "wall of
+        // bushes" look while still being fully reproducible.
+        let mut rng = coord_rng(wx, wz, element.id ^ 0xA17E_5CAB);
+        let d = if rng.random_bool(0.55) { 2 } else { 3 };
+        let x = wx + nx * d;
+        let z = wz + nz * d;
+
+        // Match the foundation-pillar pattern used elsewhere in this
+        // file: ground.level(..) when an elevation tile is loaded,
+        // otherwise the flat fallback args.ground_level.  The absolute
+        // Y is then offset by abs_terrain_offset so non-terrain runs
+        // (where ground = None) land on the configured ground level.
+        let min_coords = editor.get_min_coords();
+        let local_ground = if let Some(ground) = editor.get_ground() {
+            ground.level(XZPoint::new(x - min_coords.0, z - min_coords.1))
+        } else {
+            args.ground_level
+        };
+        let base_y = local_ground + 1 + abs_offset;
+
+        let roll: f64 = rng.random();
+        if d == 2 && roll < tree_threshold {
+            place_small_tree(editor, x, base_y, z);
+        } else if roll < bush_threshold {
+            editor.set_block_absolute(OAK_LEAVES, x, base_y, z, None, None);
+        } else if roll < cover_threshold {
+            let cover = if rng.random_bool(0.6) { GRASS } else { FERN };
+            editor.set_block_absolute(cover, x, base_y, z, None, None);
+        }
+    }
+}
+
+/// Places a small 2-block-tall oak tree with a 5-leaf cross canopy at
+/// `(x, base_y, z)` (where `base_y` is the first air block above
+/// terrain). All blocks are placed with the default protections so the
+/// tree silently fails if any of its cells already contain something
+/// (road, fence, building, another tree, …).
+fn place_small_tree(editor: &mut WorldEditor, x: i32, base_y: i32, z: i32) {
+    editor.set_block_absolute(OAK_LOG, x, base_y, z, None, None);
+    editor.set_block_absolute(OAK_LOG, x, base_y + 1, z, None, None);
+    let canopy_y = base_y + 2;
+    editor.set_block_absolute(OAK_LEAVES, x, canopy_y, z, None, None);
+    editor.set_block_absolute(OAK_LEAVES, x + 1, canopy_y, z, None, None);
+    editor.set_block_absolute(OAK_LEAVES, x - 1, canopy_y, z, None, None);
+    editor.set_block_absolute(OAK_LEAVES, x, canopy_y, z + 1, None, None);
+    editor.set_block_absolute(OAK_LEAVES, x, canopy_y, z - 1, None, None);
+    // Crown leaf one above the centre log so the tree reads as 3 blocks
+    // tall instead of a flat disc.
+    editor.set_block_absolute(OAK_LEAVES, x, canopy_y + 1, z, None, None);
+}
+
 /// Generates special doors for garages (double door) and sheds (single door)
 fn generate_special_doors(
     editor: &mut WorldEditor,
@@ -3706,6 +3840,14 @@ pub fn generate_buildings(
     // Generate special doors (garage doors, shed doors)
     if config.has_garage_door || config.has_single_door {
         generate_special_doors(editor, element, &config, &wall_outline, effective_passages);
+    }
+
+    // Scatter small landscaping (trees, bushes, ground cover) around
+    // the perimeter for categories that typically have a yard.  Uses
+    // set_block_absolute(.., None, None) so any pre-existing block
+    // (road, building, fence, …) is left alone.
+    if config.is_ground_level {
+        generate_landscaping(editor, element, &config, &wall_outline, args);
     }
 
     // Add shutters and window boxes to small residential buildings
