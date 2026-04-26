@@ -71,8 +71,16 @@ const ACCENT_BLOCK_OPTIONS: [Block; 6] = [
 // Wall Block Palettes for Different Building Types
 // ============================================================================
 
-/// Wall blocks suitable for residential buildings (warm, homey materials)
-const RESIDENTIAL_WALL_OPTIONS: [Block; 24] = [
+/// Wall blocks suitable for residential buildings (warm, homey materials).
+///
+/// Tightened to remove unrealistic / fantasy materials that previously
+/// produced houses out of NETHER_BRICK or POLISHED_BLACKSTONE_BRICKS.
+/// Real-world houses are predominantly brick, plaster (terracotta),
+/// stone, sandstone, concrete and wood (post-war). The era-aware
+/// helper `house_palette_for_era` further filters this list per
+/// `start_date` so older houses skew brick / wood and newer ones
+/// skew concrete / quartz.
+const RESIDENTIAL_WALL_OPTIONS: [Block; 17] = [
     BRICK,
     STONE_BRICKS,
     WHITE_TERRACOTTA,
@@ -81,22 +89,15 @@ const RESIDENTIAL_WALL_OPTIONS: [Block; 24] = [
     SMOOTH_SANDSTONE,
     QUARTZ_BRICKS,
     MUD_BRICKS,
-    POLISHED_GRANITE,
-    END_STONE_BRICKS,
     BROWN_CONCRETE,
-    DEEPSLATE_BRICKS,
-    GRAY_CONCRETE,
     GRAY_TERRACOTTA,
     LIGHT_BLUE_TERRACOTTA,
     LIGHT_GRAY_CONCRETE,
     LIGHT_GRAY_TERRACOTTA,
-    NETHER_BRICK,
     POLISHED_ANDESITE,
-    POLISHED_BLACKSTONE,
-    POLISHED_BLACKSTONE_BRICKS,
-    POLISHED_DEEPSLATE,
     QUARTZ_BLOCK,
     WHITE_CONCRETE,
+    OAK_PLANKS,
 ];
 
 /// Wall blocks suitable for commercial/office buildings (modern, clean look)
@@ -801,9 +802,21 @@ impl BuildingStyle {
                     NETHER_BRICK,
                     STONE_BRICKS,
                 ];
-                MODERN_ACCENT_OPTIONS[rng.random_range(0..MODERN_ACCENT_OPTIONS.len())]
+                let candidates: Vec<Block> = MODERN_ACCENT_OPTIONS
+                    .iter()
+                    .copied()
+                    .filter(|b| *b != wall_block)
+                    .collect();
+                if candidates.is_empty() {
+                    POLISHED_ANDESITE
+                } else {
+                    candidates[rng.random_range(0..candidates.len())]
+                }
             } else {
-                ACCENT_BLOCK_OPTIONS[rng.random_range(0..ACCENT_BLOCK_OPTIONS.len())]
+                // Pick an accent that is guaranteed not to match the wall
+                // block, so trim, foundation courses and pilasters stay
+                // visible against the facade.
+                pick_accent_for_wall(wall_block, rng)
             }
         });
 
@@ -1118,6 +1131,150 @@ fn calculate_start_y_offset(
     }
 }
 
+/// A coarse era bucket derived from `start_date` (or a similar OSM tag).
+/// Used to filter the per-category wall palette so a 1880s house leans
+/// brick / wood and a 2010s tower leans concrete / glass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildingEra {
+    PreModern,    // <= 1899: brick, plaster, stone, wood
+    EarlyModern,  // 1900-1949: brick, stone, early concrete
+    PostWar,      // 1950-1999: concrete, terracotta, brick
+    Contemporary, // >= 2000: white concrete, quartz, glass
+}
+
+/// Parses the leading 4-digit year out of a freeform OSM date string
+/// (e.g. "1898", "1898-05-01", "before 1900", "1880s"). Returns None
+/// if no year is present.
+fn parse_year(s: &str) -> Option<i32> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i + 4 <= bytes.len() {
+        if bytes[i..i + 4].iter().all(|b| b.is_ascii_digit()) {
+            return std::str::from_utf8(&bytes[i..i + 4]).ok()?.parse().ok();
+        }
+        i += 1;
+    }
+    None
+}
+
+fn era_from_year(year: i32) -> BuildingEra {
+    match year {
+        y if y < 1900 => BuildingEra::PreModern,
+        y if y < 1950 => BuildingEra::EarlyModern,
+        y if y < 2000 => BuildingEra::PostWar,
+        _ => BuildingEra::Contemporary,
+    }
+}
+
+/// Reads `start_date` / `building:start_date` / `construction_date`
+/// and resolves to a coarse era bucket. Returns `None` when no usable
+/// year is present so the caller can fall back to the full palette.
+fn detect_building_era(element: &ProcessedWay) -> Option<BuildingEra> {
+    for key in ["start_date", "building:start_date", "construction_date"] {
+        if let Some(raw) = element.tags.get(key) {
+            if let Some(year) = parse_year(raw) {
+                return Some(era_from_year(year));
+            }
+        }
+    }
+    None
+}
+
+/// Era-filtered palette for residential / house buildings. Each era
+/// returns a *subset* of `RESIDENTIAL_WALL_OPTIONS` plus era-typical
+/// materials (e.g. wood for pre-modern rural homes) so a single street
+/// of buildings with mixed `start_date` reads as a real timeline.
+fn house_palette_for_era(era: BuildingEra) -> &'static [Block] {
+    match era {
+        BuildingEra::PreModern => &[
+            BRICK,
+            STONE_BRICKS,
+            MUD_BRICKS,
+            OAK_PLANKS,
+            SPRUCE_PLANKS,
+            SANDSTONE,
+            COBBLESTONE,
+        ],
+        BuildingEra::EarlyModern => &[
+            BRICK,
+            STONE_BRICKS,
+            WHITE_TERRACOTTA,
+            BROWN_TERRACOTTA,
+            SANDSTONE,
+            SMOOTH_SANDSTONE,
+            OAK_PLANKS,
+        ],
+        BuildingEra::PostWar => &[
+            BRICK,
+            WHITE_TERRACOTTA,
+            BROWN_TERRACOTTA,
+            LIGHT_GRAY_CONCRETE,
+            LIGHT_GRAY_TERRACOTTA,
+            BROWN_CONCRETE,
+            LIGHT_BLUE_TERRACOTTA,
+        ],
+        BuildingEra::Contemporary => &[
+            WHITE_CONCRETE,
+            LIGHT_GRAY_CONCRETE,
+            QUARTZ_BLOCK,
+            QUARTZ_BRICKS,
+            WHITE_TERRACOTTA,
+            BRICK,
+        ],
+    }
+}
+
+/// Era-filtered palette for commercial / office / hotel buildings.
+fn commercial_palette_for_era(era: BuildingEra) -> &'static [Block] {
+    match era {
+        BuildingEra::PreModern => &[BRICK, STONE_BRICKS, SANDSTONE, SMOOTH_SANDSTONE],
+        BuildingEra::EarlyModern => &[
+            STONE_BRICKS,
+            BRICK,
+            LIGHT_GRAY_CONCRETE,
+            SANDSTONE,
+            POLISHED_ANDESITE,
+        ],
+        BuildingEra::PostWar => &[
+            LIGHT_GRAY_CONCRETE,
+            GRAY_CONCRETE,
+            SMOOTH_STONE,
+            POLISHED_ANDESITE,
+            WHITE_CONCRETE,
+        ],
+        BuildingEra::Contemporary => &[
+            WHITE_CONCRETE,
+            QUARTZ_BLOCK,
+            QUARTZ_BRICKS,
+            LIGHT_GRAY_CONCRETE,
+        ],
+    }
+}
+
+/// Maps an OSM `building:material` / `facade:material` tag value to a
+/// concrete Minecraft block. Returns None for unrecognised materials so
+/// the caller falls back to the colour / era / category palette.
+fn parse_building_material(value: &str, rng: &mut impl Rng) -> Option<Block> {
+    let v = value.trim().to_ascii_lowercase();
+    let opts: &[Block] = match v.as_str() {
+        "brick" | "bricks" | "brickwork" => &[BRICK],
+        "wood" | "timber" | "log" | "wooden" => &[OAK_PLANKS, SPRUCE_PLANKS, DARK_OAK_PLANKS],
+        "concrete" | "reinforced_concrete" | "precast_concrete" => {
+            &[LIGHT_GRAY_CONCRETE, GRAY_CONCRETE, WHITE_CONCRETE]
+        }
+        "stone" | "masonry" | "rubble" => &[STONE_BRICKS, COBBLESTONE, ANDESITE],
+        "sandstone" => &[SANDSTONE, SMOOTH_SANDSTONE],
+        "glass" | "curtain_wall" => &[GLASS, GRAY_STAINED_GLASS, LIGHT_BLUE_STAINED_GLASS],
+        "metal" | "steel" | "iron" | "aluminium" | "aluminum" => &[IRON_BLOCK, GRAY_CONCRETE],
+        "plaster" | "stucco" | "render" => &[WHITE_TERRACOTTA, SMOOTH_QUARTZ],
+        "marble" => &[QUARTZ_BLOCK, SMOOTH_QUARTZ],
+        "granite" => &[POLISHED_GRANITE],
+        "mud" | "adobe" | "cob" => &[MUD_BRICKS],
+        _ => return None,
+    };
+    Some(opts[rng.random_range(0..opts.len())])
+}
+
 /// Determines the wall block based on building tags
 fn determine_wall_block(
     element: &ProcessedWay,
@@ -1129,18 +1286,68 @@ fn determine_wall_block(
         return get_castle_wall_block();
     }
 
-    // Try to get wall block from building:colour tag first.
-    // Skip for GlassySkyscraper: its wall MUST be glass (has_windows=false relies on this).
+    // Skip material/colour overrides for GlassySkyscraper: its wall MUST
+    // be glass (has_windows=false relies on this).
     if category != BuildingCategory::GlassySkyscraper {
+        // Highest priority: explicit material tag (most reliable signal).
+        for key in ["building:material", "facade:material"] {
+            if let Some(material) = element.tags.get(key) {
+                if let Some(block) = parse_building_material(material, rng) {
+                    return block;
+                }
+            }
+        }
+
+        // Next: colour tag.
         if let Some(building_colour) = element.tags.get("building:colour") {
             if let Some(rgb) = color_text_to_rgb_tuple(building_colour) {
                 return get_building_wall_block_for_color(rgb);
+            }
+        }
+
+        // Next: era-filtered category palette (only for House / Office /
+        // Commercial / Hotel / Apartments where era materially changes
+        // the look). Other categories use their full palette unchanged.
+        if let Some(era) = detect_building_era(element) {
+            let era_palette: Option<&[Block]> = match category {
+                BuildingCategory::House | BuildingCategory::Residential => {
+                    Some(house_palette_for_era(era))
+                }
+                BuildingCategory::Commercial
+                | BuildingCategory::Office
+                | BuildingCategory::Hotel => Some(commercial_palette_for_era(era)),
+                _ => None,
+            };
+            if let Some(p) = era_palette {
+                return p[rng.random_range(0..p.len())];
             }
         }
     }
 
     // Otherwise, select from category-specific palette
     get_wall_block_for_category(category, rng)
+}
+
+/// Picks an accent block that contrasts with `wall` so trim, foundation
+/// courses and pilasters never disappear into the wall colour. The
+/// candidate list is the standard `ACCENT_BLOCK_OPTIONS` minus the wall
+/// block itself; if nothing remains we fall back to a hard-coded
+/// contrast pair that's guaranteed to differ.
+fn pick_accent_for_wall(wall: Block, rng: &mut impl Rng) -> Block {
+    let candidates: Vec<Block> = ACCENT_BLOCK_OPTIONS
+        .iter()
+        .copied()
+        .filter(|b| *b != wall)
+        .collect();
+    if candidates.is_empty() {
+        // Safety fallback: pick something explicitly different.
+        return if wall == POLISHED_ANDESITE {
+            STONE_BRICKS
+        } else {
+            POLISHED_ANDESITE
+        };
+    }
+    candidates[rng.random_range(0..candidates.len())]
 }
 
 /// Selects a wall block from the appropriate category palette
