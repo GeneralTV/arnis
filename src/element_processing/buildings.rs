@@ -903,8 +903,22 @@ impl BuildingStyle {
             is_residential && suitable_roof && suitable_size && rng.random_bool(0.55)
         });
 
-        // Roof block: specific material for roofs
-        let roof_block = preset.roof_block;
+        // Roof block: specific material for roofs.
+        // Priority: OSM roof:colour > OSM roof:material > preset > default (palette mix).
+        // The resolved Some(block) flows through generate_roof as roof_block_override
+        // and applies to flat, gabled, hipped, skillion, pyramidal, and dome roofs.
+        let roof_block = element
+            .tags
+            .get("roof:colour")
+            .and_then(|c| color_text_to_rgb_tuple(c))
+            .map(|rgb| get_roof_block_for_color_with_rng(rgb, rng))
+            .or_else(|| {
+                element
+                    .tags
+                    .get("roof:material")
+                    .and_then(|m| get_roof_block_for_material_with_rng(m, rng))
+            })
+            .or(preset.roof_block);
 
         // Windows: default to true unless explicitly disabled
         let has_windows = preset.has_windows.unwrap_or(true);
