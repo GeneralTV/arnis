@@ -183,6 +183,60 @@ const GARAGE_WALL_OPTIONS: [Block; 6] = [
 /// Wall blocks for sheds (wooden)
 const SHED_WALL_OPTIONS: [Block; 1] = [OAK_LOG];
 
+/// Picks a foundation block that fits the building category and never
+/// matches the wall block. Wood-walled buildings get a stone plinth
+/// (real timber houses are almost always built on a fieldstone /
+/// cobblestone foundation); commercial / institutional buildings get
+/// a polished or smooth stone foundation; industrial buildings get
+/// gray concrete; religious / historic / tower buildings keep stone
+/// brick. The wall-block filter at the end guarantees the foundation
+/// course is visibly different from the facade above it.
+fn pick_foundation_block(category: BuildingCategory, wall: Block, rng: &mut impl Rng) -> Block {
+    let candidates: &[Block] = if matches!(
+        wall,
+        OAK_PLANKS | SPRUCE_PLANKS | DARK_OAK_PLANKS | OAK_LOG | SPRUCE_LOG
+    ) {
+        &[COBBLESTONE, MOSSY_COBBLESTONE, STONE_BRICKS]
+    } else {
+        match category {
+            BuildingCategory::House
+            | BuildingCategory::Residential
+            | BuildingCategory::Farm
+            | BuildingCategory::Garage
+            | BuildingCategory::Shed => &[COBBLESTONE, STONE_BRICKS, ANDESITE],
+            BuildingCategory::Office
+            | BuildingCategory::Commercial
+            | BuildingCategory::Hotel
+            | BuildingCategory::School
+            | BuildingCategory::Hospital
+            | BuildingCategory::TallBuilding
+            | BuildingCategory::ModernSkyscraper
+            | BuildingCategory::GlassySkyscraper => {
+                &[POLISHED_ANDESITE, SMOOTH_STONE, GRAY_CONCRETE]
+            }
+            BuildingCategory::Industrial | BuildingCategory::Warehouse => {
+                &[GRAY_CONCRETE, LIGHT_GRAY_CONCRETE, SMOOTH_STONE]
+            }
+            BuildingCategory::Religious | BuildingCategory::Historic | BuildingCategory::Tower => {
+                &[STONE_BRICKS, COBBLESTONE, MOSSY_COBBLESTONE]
+            }
+            BuildingCategory::Greenhouse => &[BRICK, COBBLESTONE],
+            BuildingCategory::Default => &[POLISHED_ANDESITE, STONE_BRICKS],
+        }
+    };
+
+    let filtered: Vec<Block> = candidates.iter().copied().filter(|b| *b != wall).collect();
+    if filtered.is_empty() {
+        // Last-resort fallback: pick something explicitly different.
+        return if wall == STONE_BRICKS {
+            COBBLESTONE
+        } else {
+            STONE_BRICKS
+        };
+    }
+    filtered[rng.random_range(0..filtered.len())]
+}
+
 /// Wall blocks for greenhouses (glass variants)
 const GREENHOUSE_WALL_OPTIONS: [Block; 4] = [
     GLASS,
@@ -711,6 +765,11 @@ pub struct BuildingStyle {
     pub floor_block: Block,
     pub window_block: Block,
     pub accent_block: Block,
+    /// Block used for the foundation course (the pillars that step
+    /// down to terrain on sloped sites). Always different from
+    /// `wall_block` so the foundation is visibly distinct from the
+    /// facade above it.
+    pub foundation_block: Block,
     pub roof_block: Option<Block>, // Optional specific roof material
 
     // Window style
@@ -959,11 +1018,17 @@ impl BuildingStyle {
             is_flat && has_multiple_floors && suitable
         });
 
+        // Foundation course block: derived from category + wall, with
+        // a guarantee that it differs from the wall so the foundation
+        // is visible against the facade on sloped terrain.
+        let foundation_block = pick_foundation_block(category, wall_block, rng);
+
         Self {
             wall_block,
             floor_block,
             window_block,
             accent_block,
+            foundation_block,
             roof_block,
             use_vertical_windows,
             use_horizontal_windows,
@@ -1009,6 +1074,10 @@ struct BuildingConfig {
     wall_depth_style: WallDepthStyle,
     has_parapet: bool,
     has_lobby_base: bool,
+    /// Block used for foundation pillars under the building when terrain
+    /// drops below `start_y_offset`. Distinct from `wall_block` so the
+    /// foundation course is visible against the facade.
+    foundation_block: Block,
 }
 
 impl BuildingConfig {
@@ -1647,9 +1716,13 @@ fn build_wall_ring(
                         args.ground_level
                     };
 
+                    // Use the dedicated foundation block (always visibly
+                    // distinct from the wall) so a sloped site reads as
+                    // a stepped masonry plinth rather than wall material
+                    // bleeding into the ground.
                     for y in local_ground_level..config.start_y_offset + 1 {
                         editor.set_block_absolute(
-                            config.wall_block,
+                            config.foundation_block,
                             bx,
                             y + config.abs_terrain_offset,
                             bz,
@@ -3665,6 +3738,7 @@ pub fn generate_buildings(
         } else {
             false
         },
+        foundation_block: style.foundation_block,
     };
 
     // Passages only apply to ground-level buildings. Elevated building:part
