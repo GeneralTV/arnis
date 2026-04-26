@@ -1841,6 +1841,179 @@ fn generate_special_doors(
     }
 }
 
+// ============================================================================
+// Ground-floor features (storefronts, lobbies, awnings, loading docks)
+// ============================================================================
+
+/// Adds category-specific ground-floor visual treatments after the basic
+/// wall ring has been built. This pass runs after `build_wall_ring` /
+/// `generate_special_doors` so it can overwrite the default wall pattern
+/// at the ground level without fighting per-bay window logic.
+///
+/// - `Commercial` / `Retail`: full-height storefront glass on the bottom
+///   two rows + an awning slab one block outward above.
+/// - `Office` / `Hotel` (non-tall, no existing lobby base): a glass lobby
+///   front for the bottom two rows.
+/// - `Industrial` / `Warehouse`: a 3-block-wide iron-bars loading dock
+///   centred on the longest wall segment.
+fn generate_ground_floor_features(
+    editor: &mut WorldEditor,
+    element: &ProcessedWay,
+    config: &BuildingConfig,
+    building_passages: &CoordinateBitmap,
+) {
+    let nodes = &element.nodes;
+    if nodes.len() < 2 {
+        return;
+    }
+    // Need at least one floor + the row above to make a meaningful storefront.
+    if config.building_height < 4 {
+        return;
+    }
+    // Don't run on elevated building:parts — ground-floor treatments only
+    // make sense on buildings that actually start at street level.
+    if !config.is_ground_level {
+        return;
+    }
+    let centroid = match compute_building_centroid(nodes) {
+        Some(c) => c,
+        None => return,
+    };
+
+    match config.category {
+        BuildingCategory::Commercial => {
+            apply_storefront(editor, nodes, config, building_passages, centroid, true);
+        }
+        // Tall offices already get a `has_lobby_base` ribbon from the
+        // horizontal-window pattern; only decorate the small ones.
+        BuildingCategory::Office | BuildingCategory::Hotel
+            if !config.is_tall_building && !config.has_lobby_base =>
+        {
+            apply_storefront(editor, nodes, config, building_passages, centroid, false);
+        }
+        BuildingCategory::Industrial | BuildingCategory::Warehouse => {
+            apply_loading_dock(editor, nodes, config, building_passages);
+        }
+        _ => {}
+    }
+}
+
+/// Replaces the bottom two rows of the facade with `window_block` (storefront
+/// glass) and, when `awning` is true, lays a quartz top-slab one block
+/// outward at row 3 to suggest a canopy. Skips corners and passage cells.
+fn apply_storefront(
+    editor: &mut WorldEditor,
+    nodes: &[ProcessedNode],
+    config: &BuildingConfig,
+    building_passages: &CoordinateBitmap,
+    centroid: (i32, i32),
+    awning: bool,
+) {
+    let (cx, cz) = centroid;
+    let abs = config.abs_terrain_offset;
+    let storefront_bot = config.start_y_offset + 1;
+    let storefront_top = config.start_y_offset + 2;
+    let awning_y = config.start_y_offset + 3;
+
+    for i in 0..nodes.len().saturating_sub(1) {
+        let (x1, z1) = (nodes[i].x, nodes[i].z);
+        let (x2, z2) = (nodes[i + 1].x, nodes[i + 1].z);
+        let pts = bresenham_line(x1, 0, z1, x2, 0, z2);
+        let seg_len = pts.len() as i32;
+        // Tiny segments would lose all of their length to corner skipping.
+        if seg_len < 3 {
+            continue;
+        }
+        let (nx, nz) = compute_outward_normal(x1, z1, x2, z2, cx, cz);
+
+        for (idx, (bx, _, bz)) in pts.iter().enumerate() {
+            let local_t = idx as i32;
+            let is_corner = local_t == 0 || local_t == seg_len - 1;
+            if is_corner {
+                continue;
+            }
+            if building_passages.contains(*bx, *bz) {
+                continue;
+            }
+
+            // Storefront glass overwrites whatever wall block was placed
+            // here. Empty blacklist matches the override style used by
+            // `generate_special_doors` / `generate_entrance_doors`.
+            for h in storefront_bot..=storefront_top {
+                editor.set_block_absolute(config.window_block, *bx, h + abs, *bz, None, Some(&[]));
+            }
+
+            if awning {
+                let ax = *bx + nx;
+                let az = *bz + nz;
+                editor.set_block_absolute(QUARTZ_SLAB_TOP, ax, awning_y + abs, az, None, None);
+            }
+        }
+    }
+}
+
+/// Carves a 3-block-wide iron-bars loading dock into the longest wall
+/// segment, centred on its midpoint. Skips placement when the chosen
+/// section overlaps a building passage or when no segment is long enough
+/// (need at least 5 blocks of run for a 3-wide opening with corner
+/// clearance on either side).
+fn apply_loading_dock(
+    editor: &mut WorldEditor,
+    nodes: &[ProcessedNode],
+    config: &BuildingConfig,
+    building_passages: &CoordinateBitmap,
+) {
+    if nodes.len() < 2 {
+        return;
+    }
+
+    // Pick the longest segment.
+    let mut best_idx = 0usize;
+    let mut best_len = 0i32;
+    for i in 0..nodes.len().saturating_sub(1) {
+        let (x1, z1) = (nodes[i].x, nodes[i].z);
+        let (x2, z2) = (nodes[i + 1].x, nodes[i + 1].z);
+        let dx = (x2 - x1).abs();
+        let dz = (z2 - z1).abs();
+        let len = dx.max(dz);
+        if len > best_len {
+            best_len = len;
+            best_idx = i;
+        }
+    }
+    if best_len < 5 {
+        return;
+    }
+
+    let (x1, z1) = (nodes[best_idx].x, nodes[best_idx].z);
+    let (x2, z2) = (nodes[best_idx + 1].x, nodes[best_idx + 1].z);
+    let pts = bresenham_line(x1, 0, z1, x2, 0, z2);
+    if pts.len() < 5 {
+        return;
+    }
+
+    let mid = (pts.len() / 2) as i32;
+    let abs = config.abs_terrain_offset;
+    // Cap the dock height at four rows or the building height, whichever
+    // is shorter — small warehouses shouldn't lose their entire facade.
+    let dock_top = config.start_y_offset + 4.min(config.building_height);
+
+    for offset in [-1, 0, 1] {
+        let pos = mid + offset;
+        if pos < 1 || pos as usize >= pts.len() - 1 {
+            // Don't carve corners, even on the longest segment.
+            continue;
+        }
+        let (bx, _, bz) = pts[pos as usize];
+        if building_passages.contains(bx, bz) {
+            continue;
+        }
+        for h in (config.start_y_offset + 1)..=dock_top {
+            editor.set_block_absolute(IRON_BARS, bx, h + abs, bz, None, Some(&[]));
+        }
+    }
+}
+
 /// Determines which block to place at a specific wall position (wall, window, or accent)
 #[inline]
 fn determine_wall_block_at_position(bx: i32, h: i32, bz: i32, config: &BuildingConfig) -> Block {
@@ -3707,6 +3880,11 @@ pub fn generate_buildings(
     if config.has_garage_door || config.has_single_door {
         generate_special_doors(editor, element, &config, &wall_outline, effective_passages);
     }
+
+    // Apply category-specific ground-floor treatments (storefronts, lobbies,
+    // loading docks). Runs after the wall ring is built so it can overwrite
+    // the default per-bay window pattern at the ground level.
+    generate_ground_floor_features(editor, element, &config, effective_passages);
 
     // Add shutters and window boxes to small residential buildings
     generate_residential_window_decorations(editor, element, &config, effective_passages);
