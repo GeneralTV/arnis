@@ -1110,6 +1110,8 @@ pub fn generate_ground_layer(
                             OAK_LEAVES,
                             DEAD_BUSH,
                             TALL_GRASS_BOTTOM,
+                            FERN,
+                            LARGE_FERN_LOWER,
                             RED_FLOWER,
                             BLUE_FLOWER,
                             WHITE_FLOWER,
@@ -1127,6 +1129,8 @@ pub fn generate_ground_layer(
                                 OAK_LEAVES,
                                 DEAD_BUSH,
                                 TALL_GRASS_BOTTOM,
+                                FERN,
+                                LARGE_FERN_LOWER,
                                 RED_FLOWER,
                                 BLUE_FLOWER,
                                 WHITE_FLOWER,
@@ -1134,12 +1138,13 @@ pub fn generate_ground_layer(
                             ]),
                             None,
                         );
-                        // Also clear tall grass top if it was a two-block plant
+                        // Also clear the second block of any two-block
+                        // plant (tall grass / large fern).
                         if editor.check_for_block_absolute(
                             x,
                             ground_y + 2,
                             z,
-                            Some(&[TALL_GRASS_TOP]),
+                            Some(&[TALL_GRASS_TOP, LARGE_FERN_UPPER]),
                             None,
                         ) {
                             editor.set_block_absolute(
@@ -1147,7 +1152,7 @@ pub fn generate_ground_layer(
                                 x,
                                 ground_y + 2,
                                 z,
-                                Some(&[TALL_GRASS_TOP]),
+                                Some(&[TALL_GRASS_TOP, LARGE_FERN_UPPER]),
                                 None,
                             );
                         }
