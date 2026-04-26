@@ -640,7 +640,10 @@ fn classify_inner(
     {
         return Some((
             S::PickupPoint,
-            ("amenity".into(), "parcel_locker".into()),
+            (
+                "amenity".into(),
+                tags.get("amenity").cloned().unwrap_or_default(),
+            ),
             0.9,
         ));
     }
