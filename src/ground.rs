@@ -35,6 +35,10 @@ pub struct Ground {
     land_cover: Option<LandCoverData>,
     /// When set, coordinates outside the rotated original bbox are skipped.
     rotation_mask: Option<RotationMask>,
+    /// Cached min / max of the elevation grid (block Y values), computed
+    /// from `elevation_data.heights` in `recompute_elevation_extent`.
+    /// `None` when elevation is disabled or the grid is empty.
+    elevation_extent: Option<(i32, i32)>,
 }
 
 impl Ground {
@@ -45,6 +49,7 @@ impl Ground {
             elevation_data: None,
             land_cover: None,
             rotation_mask: None,
+            elevation_extent: None,
         }
     }
 
@@ -81,13 +86,17 @@ impl Ground {
             extended_max_y,
             land_cover.as_mut(),
         ) {
-            Ok(elevation_data) => Self {
-                elevation_enabled: true,
-                ground_level,
-                elevation_data: Some(elevation_data),
-                land_cover,
-                rotation_mask: None,
-            },
+            Ok(elevation_data) => {
+                let extent = compute_elevation_extent(&elevation_data);
+                Self {
+                    elevation_enabled: true,
+                    ground_level,
+                    elevation_data: Some(elevation_data),
+                    land_cover,
+                    rotation_mask: None,
+                    elevation_extent: extent,
+                }
+            }
             Err(e) => {
                 eprintln!("Failed to fetch elevation data: {}", e);
                 #[cfg(feature = "gui")]
@@ -107,6 +116,7 @@ impl Ground {
                     elevation_data: None,
                     land_cover: None,
                     rotation_mask: None,
+                    elevation_extent: None,
                 }
             }
         }
@@ -344,7 +354,36 @@ impl Ground {
             data.height = grid_height;
             data.world_width = world_width;
             data.world_height = world_height;
+            self.elevation_extent = compute_elevation_extent(data);
         }
+    }
+
+    /// Returns the (min, max) block-Y range observed in the elevation
+    /// grid, computed once at construction (and refreshed when the
+    /// grid is replaced via [`set_elevation_data`]).
+    ///
+    /// `None` for flat ground or when the grid was empty.
+    #[inline(always)]
+    pub fn elevation_extent(&self) -> Option<(i32, i32)> {
+        self.elevation_extent
+    }
+
+    /// Returns a 0.0–1.0 score describing how high the cell sits
+    /// within the area's elevation range. 0.0 = at the area's lowest
+    /// point, 1.0 = at the highest. Returns 0.0 when the area has
+    /// effectively no relief or no elevation data.
+    #[inline(always)]
+    pub fn elevation_normalised(&self, coord: XZPoint) -> f32 {
+        let Some((min, max)) = self.elevation_extent else {
+            return 0.0;
+        };
+        let range = max - min;
+        if range <= 0 {
+            return 0.0;
+        }
+        let level = self.level(coord);
+        let t = (level - min) as f32 / range as f32;
+        t.clamp(0.0, 1.0)
     }
 
     /// Replace the land-cover grids with new rotated/transformed data.
@@ -448,6 +487,26 @@ impl Ground {
         if let Err(e) = img.save(&filename) {
             eprintln!("Failed to save debug image: {e}");
         }
+    }
+}
+
+/// Scan the elevation grid and return the (min, max) block-Y range,
+/// or `None` if the grid is empty or every entry is non-finite.
+fn compute_elevation_extent(data: &ElevationData) -> Option<(i32, i32)> {
+    let mut min_h = f32::INFINITY;
+    let mut max_h = f32::NEG_INFINITY;
+    for row in &data.heights {
+        for &h in row {
+            if h.is_finite() {
+                min_h = min_h.min(h);
+                max_h = max_h.max(h);
+            }
+        }
+    }
+    if min_h.is_finite() && max_h.is_finite() {
+        Some((min_h.round() as i32, max_h.round() as i32))
+    } else {
+        None
     }
 }
 

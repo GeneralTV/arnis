@@ -19,8 +19,8 @@ use crate::block_definitions::{
     COBBLED_DEEPSLATE, COBBLESTONE, CRACKED_STONE_BRICKS, CYAN_TERRACOTTA, DEAD_BUSH, DEEPSLATE,
     DIRT, DIRT_PATH, FARMLAND, GRASS, GRASS_BLOCK, GRAVEL, GRAY_CONCRETE, GRAY_CONCRETE_POWDER,
     HAY_BALE, LIGHT_GRAY_CONCRETE, MUD, OAK_LEAVES, OAK_PLANKS, POTATOES, RED_FLOWER, SAND,
-    SANDSTONE, SMOOTH_STONE, STONE, STONE_BRICKS, TALL_GRASS_BOTTOM, TALL_GRASS_TOP, TUFF, WATER,
-    WHEAT, WHITE_CONCRETE, WHITE_FLOWER, YELLOW_FLOWER,
+    SANDSTONE, SMOOTH_STONE, SNOW_BLOCK, STONE, STONE_BRICKS, TALL_GRASS_BOTTOM, TALL_GRASS_TOP,
+    TUFF, WATER, WHEAT, WHITE_CONCRETE, WHITE_FLOWER, YELLOW_FLOWER,
 };
 use crate::coordinate_system::cartesian::{XZBBox, XZPoint};
 use crate::element_processing::tree;
@@ -203,6 +203,30 @@ pub fn generate_ground_layer(
                         ground.slope(coord)
                     } else {
                         0
+                    };
+
+                    // Where the cell sits within the area's elevation
+                    // range. 0.0 = at the lowest point in the bbox,
+                    // 1.0 = at the highest. Used below to render
+                    // alpine peaks / snow caps on relatively low-slope
+                    // mountain tops that would otherwise just be flat
+                    // grass plateaus, since the slope cascade only
+                    // catches the *sides*.
+                    //
+                    // Only meaningful when the area has substantial
+                    // relief (≥ 30 blocks of vertical range). Without
+                    // this guard a flat high-altitude field would get
+                    // SNOW on its highest 5-block hill just because
+                    // it's the top of a flat region.
+                    let elevation_norm = if terrain_enabled {
+                        match ground.elevation_extent() {
+                            Some((min, max)) if max - min >= 30 => {
+                                ground.elevation_normalised(coord)
+                            }
+                            _ => 0.0,
+                        }
+                    } else {
+                        0.0
                     };
 
                     // On steep terrain, override any existing OSM surface block
@@ -389,6 +413,44 @@ pub fn generate_ground_layer(
                                         6..=7 => (STONE, STONE),       // 17%
                                         8..=9 => (COBBLESTONE, STONE), // 17%
                                         _ => (GRAVEL, STONE),          // 17% scree
+                                    }
+                                } else if elevation_norm >= 0.85 {
+                                    // High alpine peak: the cell sits in the
+                                    // top 15 % of the area's elevation range
+                                    // but isn't on a steep face (slope ≤ 4),
+                                    // so it would otherwise read as a flat
+                                    // grass plateau. Cap it with snow over
+                                    // stone so peaks actually *look* like
+                                    // peaks. Snow-dominant with occasional
+                                    // exposed stone for visual variety.
+                                    let h = land_cover::coord_hash(x, z) % 10;
+                                    if h < 7 {
+                                        (SNOW_BLOCK, STONE) // 70 % snow
+                                    } else if h < 9 {
+                                        (STONE, STONE) // 20 % bare stone
+                                    } else {
+                                        (ANDESITE, STONE) // 10 % andesite
+                                    }
+                                } else if elevation_norm >= 0.7 {
+                                    // Sub-alpine band (top 30 % but below
+                                    // the snow line): mostly the cell's
+                                    // natural surface, with stone /
+                                    // cobblestone breaking through to
+                                    // signal we're already on the mountain
+                                    // shoulder rather than the valley.
+                                    let h = land_cover::coord_hash(x, z) % 10;
+                                    let base = match cover {
+                                        land_cover::LC_TREE_COVER
+                                        | land_cover::LC_SHRUBLAND
+                                        | land_cover::LC_GRASSLAND => (GRASS_BLOCK, DIRT),
+                                        _ => (COARSE_DIRT, DIRT),
+                                    };
+                                    if h < 2 {
+                                        (STONE, STONE) // 20 % rocky outcrop
+                                    } else if h < 3 {
+                                        (COBBLESTONE, STONE) // 10 % weathered
+                                    } else {
+                                        base
                                     }
                                 } else {
                                     // Select surface block based on ESA land cover class
