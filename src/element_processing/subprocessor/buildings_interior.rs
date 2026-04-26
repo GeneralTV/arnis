@@ -1,8 +1,48 @@
 use crate::block_definitions::*;
-use crate::element_processing::buildings::BUILDING_PASSAGE_HEIGHT;
+use crate::element_processing::buildings::{BuildingCategory, BUILDING_PASSAGE_HEIGHT};
 use crate::floodfill_cache::CoordinateBitmap;
 use crate::world_editor::WorldEditor;
 use std::collections::HashSet;
+
+/// Picks which interior layout style to apply to a building.
+///
+/// `Residential` and `Abandoned` reuse the existing 23x23 character
+/// patterns (kitchens, beds, bookshelves, ...); the remaining variants
+/// are generated procedurally per cell so each category gets a visibly
+/// different floor plan without authoring seven separate static patterns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteriorProfile {
+    Residential,
+    Abandoned,
+    Office,
+    Warehouse,
+    Retail,
+    Hotel,
+    School,
+    Hospital,
+}
+
+impl InteriorProfile {
+    /// Selects the interior profile for a building given its category
+    /// and abandoned-state flag. Categories without a dedicated profile
+    /// (e.g. `Religious`, `Tower`, `Garage`, ...) keep the residential
+    /// pattern as a sensible fallback.
+    pub fn from_category(category: BuildingCategory, is_abandoned: bool) -> Self {
+        if is_abandoned {
+            return Self::Abandoned;
+        }
+        match category {
+            BuildingCategory::Office | BuildingCategory::TallBuilding => Self::Office,
+            BuildingCategory::GlassySkyscraper | BuildingCategory::ModernSkyscraper => Self::Office,
+            BuildingCategory::Industrial | BuildingCategory::Warehouse => Self::Warehouse,
+            BuildingCategory::Commercial => Self::Retail,
+            BuildingCategory::Hotel => Self::Hotel,
+            BuildingCategory::School => Self::School,
+            BuildingCategory::Hospital => Self::Hospital,
+            _ => Self::Residential,
+        }
+    }
+}
 
 /// Interior layout for building ground floors (1st layer above floor)
 #[rustfmt::skip]
@@ -276,6 +316,150 @@ pub fn get_interior_block(c: char, is_layer2: bool, wall_block: Block) -> Option
     }
 }
 
+/// Returns the (layer1, layer2) characters for a procedurally generated
+/// profile at the given local cell. Each variant lays out a category-
+/// appropriate room pattern in modular tiles so a single building reads
+/// distinctly different from another category at the same scale:
+///
+/// - `Office`: 4-wide cubicles with desks, chairs and filing cabinets,
+///   cubicle dividers running on every 4th column and every 5th row.
+/// - `Warehouse`: 3-tall, 3-deep bookshelf stacks every 6 cells with
+///   wide aisles between them and overhead glowstone lamps.
+/// - `Retail`: a horizontal counter every 8 rows plus carpet floor pads
+///   and overhead lamps; otherwise open shop floor.
+/// - `Hotel`: 5x5 rooms separated by walls, each room with a north-
+///   facing bed and a corner bookshelf, doors centred on the corridor.
+/// - `School`: 8x8 classrooms with two rows of desks (paired chairs)
+///   plus a back-wall bookshelf bank, doors on the corridor side.
+/// - `Hospital`: 6-wide wards with east-facing beds, brewing-stand
+///   medical equipment, wall cabinets, and corridor doors.
+///
+/// `Residential` and `Abandoned` short-circuit to (' ', ' ') because the
+/// caller still uses the original static 23x23 character patterns.
+fn procedural_interior_cell(
+    profile: InteriorProfile,
+    xl: i32,
+    zl: i32,
+    floor_index: i32,
+) -> (char, char) {
+    match profile {
+        InteriorProfile::Residential | InteriorProfile::Abandoned => (' ', ' '),
+        InteriorProfile::Office => office_cell(xl, zl, floor_index),
+        InteriorProfile::Warehouse => warehouse_cell(xl, zl),
+        InteriorProfile::Retail => retail_cell(xl, zl),
+        InteriorProfile::Hotel => hotel_cell(xl, zl),
+        InteriorProfile::School => school_cell(xl, zl),
+        InteriorProfile::Hospital => hospital_cell(xl, zl),
+    }
+}
+
+fn office_cell(xl: i32, zl: i32, _floor_index: i32) -> (char, char) {
+    let mx = xl.rem_euclid(4);
+    let mz = zl.rem_euclid(5);
+    let mut c1 = if mx == 0 || mz == 0 {
+        'U' // cubicle dividers (oak fence)
+    } else if mx == 1 && mz == 2 {
+        'C' // desk
+    } else if mx == 1 && mz == 3 {
+        'S' // chair
+    } else if mx == 2 && mz == 2 {
+        'a' // chiseled bookshelf as filing cabinet
+    } else {
+        ' '
+    };
+    if xl.rem_euclid(8) == 4 && zl.rem_euclid(8) == 4 {
+        c1 = 'G'; // overhead lamp
+    }
+    (c1, ' ')
+}
+
+fn warehouse_cell(xl: i32, zl: i32) -> (char, char) {
+    let mx = xl.rem_euclid(6);
+    let mz = zl.rem_euclid(6);
+    if mx == 0 && (0..=2).contains(&mz) {
+        ('B', 'B')
+    } else if xl.rem_euclid(8) == 4 && zl.rem_euclid(8) == 4 {
+        ('G', ' ')
+    } else {
+        (' ', ' ')
+    }
+}
+
+fn retail_cell(xl: i32, zl: i32) -> (char, char) {
+    if zl.rem_euclid(8) == 2 && xl.rem_euclid(4) <= 2 {
+        ('C', ' ')
+    } else if xl.rem_euclid(8) == 4 && zl.rem_euclid(8) == 4 {
+        ('G', ' ')
+    } else if (xl + zl).rem_euclid(3) == 0 {
+        ('T', ' ')
+    } else {
+        (' ', ' ')
+    }
+}
+
+fn hotel_cell(xl: i32, zl: i32) -> (char, char) {
+    let mx = xl.rem_euclid(5);
+    let mz = zl.rem_euclid(5);
+    let c1 = if mx == 0 && mz == 3 {
+        'D'
+    } else if mx == 0 || mz == 0 {
+        'W'
+    } else if mx == 2 && mz == 1 {
+        '1' // bed head (north)
+    } else if mx == 2 && mz == 2 {
+        '2' // bed foot
+    } else if mx == 4 && mz == 4 {
+        'B'
+    } else {
+        ' '
+    };
+    let c2 = if c1 == 'D' { 'D' } else { ' ' };
+    (c1, c2)
+}
+
+fn school_cell(xl: i32, zl: i32) -> (char, char) {
+    let mx = xl.rem_euclid(8);
+    let mz = zl.rem_euclid(8);
+    let c1 = if mx == 0 && mz == 4 {
+        'D'
+    } else if mx == 0 || mz == 0 {
+        'W'
+    } else if (2..=6).contains(&mx) && (mz == 2 || mz == 4) {
+        'C' // rows of desks
+    } else if (2..=6).contains(&mx) && (mz == 3 || mz == 5) {
+        'S' // chairs
+    } else if mx == 1 {
+        'B' // back-wall bookshelves
+    } else {
+        ' '
+    };
+    let c2 = if c1 == 'D' { 'D' } else { ' ' };
+    (c1, c2)
+}
+
+fn hospital_cell(xl: i32, zl: i32) -> (char, char) {
+    let mx = xl.rem_euclid(6);
+    let mz = zl.rem_euclid(8);
+    // East-facing bed: head at higher x (mx==3), foot at lower x (mx==2).
+    let c1 = if mx == 0 && mz == 4 {
+        'D'
+    } else if mx == 0 || mz == 0 {
+        'W'
+    } else if mz == 1 && mx == 3 {
+        '3' // bed east head
+    } else if mz == 1 && mx == 2 {
+        '4' // bed east foot
+    } else if mz == 1 && mx == 4 {
+        'N' // brewing stand (medical equipment)
+    } else if mx == 4 && mz == 4 {
+        'B'
+    } else {
+        ' '
+    };
+    let c2 = if c1 == 'D' { 'D' } else { ' ' };
+    (c1, c2)
+}
+
 /// Generates interior layouts inside buildings at each floor level
 #[allow(clippy::too_many_arguments)]
 pub fn generate_building_interior(
@@ -293,6 +477,7 @@ pub fn generate_building_interior(
     element: &crate::osm_parser::ProcessedWay,
     abs_terrain_offset: i32,
     is_abandoned_building: bool,
+    category: BuildingCategory,
     building_passages: &CoordinateBitmap,
 ) {
     // Skip interior generation for very small buildings
@@ -312,6 +497,16 @@ pub fn generate_building_interior(
     let interior_min_z = min_z + buffer;
     let interior_max_x = max_x - buffer;
     let interior_max_z = max_z - buffer;
+
+    // Pick the interior layout style for this building once. Residential
+    // and Abandoned buildings keep using the existing 23x23 character
+    // patterns; everything else delegates to a per-cell procedural
+    // generator so each category has a recognisable floor plan.
+    let profile = InteriorProfile::from_category(category, is_abandoned_building);
+    let use_static_pattern = matches!(
+        profile,
+        InteriorProfile::Residential | InteriorProfile::Abandoned
+    );
 
     // Generate interiors for each floor
     for (floor_index, &floor_y) in floor_levels.iter().enumerate() {
@@ -337,7 +532,10 @@ pub fn generate_building_interior(
             }
         };
 
-        // Choose the appropriate interior pattern based on floor number
+        // Choose the appropriate interior pattern based on floor number.
+        // Only the static-pattern profiles read from these arrays; the
+        // procedural profiles ignore them (the references are unused but
+        // keep the existing static-pattern lookup branch readable).
         let (layer1, layer2) = if is_abandoned_building {
             if floor_index == 0 {
                 (&ABANDONED_INTERIOR1_LAYER1, &ABANDONED_INTERIOR1_LAYER2)
@@ -375,19 +573,22 @@ pub fn generate_building_interior(
                     continue;
                 }
 
-                // Map the world coordinates to pattern coordinates using modulo
-                // This creates a seamless tiling effect across the entire building
-                // Add floor_index offset to create variation between floors
-                let pattern_x = ((x - interior_min_x + floor_index as i32) % pattern_width
-                    + pattern_width)
-                    % pattern_width;
-                let pattern_z = ((z - interior_min_z + floor_index as i32) % pattern_height
-                    + pattern_height)
-                    % pattern_height;
+                let xl = x - interior_min_x + floor_index as i32;
+                let zl = z - interior_min_z + floor_index as i32;
 
-                // Access the pattern arrays safely
-                let cell1 = layer1[pattern_z as usize][pattern_x as usize];
-                let cell2 = layer2[pattern_z as usize][pattern_x as usize];
+                let (cell1, cell2) = if use_static_pattern {
+                    // Map the world coordinates to pattern coordinates using modulo
+                    // This creates a seamless tiling effect across the entire building.
+                    // Add floor_index offset to create variation between floors.
+                    let pattern_x = xl.rem_euclid(pattern_width);
+                    let pattern_z = zl.rem_euclid(pattern_height);
+                    (
+                        layer1[pattern_z as usize][pattern_x as usize],
+                        layer2[pattern_z as usize][pattern_x as usize],
+                    )
+                } else {
+                    procedural_interior_cell(profile, xl, zl, floor_index as i32)
+                };
 
                 // Place first layer blocks
                 if let Some(block) = get_interior_block(cell1, false, wall_block) {

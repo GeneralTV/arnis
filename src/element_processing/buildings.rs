@@ -3800,6 +3800,7 @@ pub fn generate_buildings(
                     element,
                     abs_terrain_offset,
                     is_abandoned_building,
+                    category,
                     effective_passages,
                 );
             }
