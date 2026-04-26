@@ -25,6 +25,23 @@ pub fn generate_waterways(editor: &mut WorldEditor, element: &ProcessedWay) {
             return;
         }
 
+        // Ditches and drains are small drainage channels. When they sit
+        // on dry land the regular `create_water_channel` placement
+        // skips every cell where ground is above water level, so the
+        // ditch is invisible. Force-place a flooded drainage strip at
+        // surface level so the player sees a thin water line tracing
+        // the ditch / drain, regardless of the local water table.
+        //
+        // We can't actually carve a depression: ground-generation runs
+        // after element processing and re-fills any AIR placed at
+        // `ground_y` via `set_block_if_absent_absolute` (see
+        // `ground_generation.rs:614`). The cleanest visible alternative
+        // is a surface-level water stripe, which both survives the
+        // ground pass (WATER is not AIR, so the surface fill is
+        // skipped) and reads naturally as a drainage feature with
+        // standing water.
+        let is_drainage = matches!(waterway_type.as_str(), "ditch" | "drain");
+
         // Process consecutive node pairs to create waterways
         // Use windows(2) to avoid connecting last node back to first
         for nodes_pair in element.nodes.windows(2) {
@@ -47,8 +64,72 @@ pub fn generate_waterways(editor: &mut WorldEditor, element: &ProcessedWay) {
             );
 
             for (bx, _, bz) in bresenham_points {
-                create_water_channel(editor, bx, bz, waterway_width, seg_water_y);
+                if is_drainage {
+                    create_drainage_strip(editor, bx, bz, waterway_width);
+                } else {
+                    create_water_channel(editor, bx, bz, waterway_width, seg_water_y);
+                }
             }
+        }
+    }
+}
+
+/// Render a `waterway=ditch` / `waterway=drain` as a flooded surface
+/// strip so the drainage feature is visible on dry ground. We force
+/// `WATER` at `ground_y` (not `ground_y + 1`, so the player sees the
+/// water sitting flush with surrounding terrain) and clear vegetation
+/// above. This intentionally does *not* try to carve a depression —
+/// terrain post-processing rebuilds the surface from the heightmap and
+/// would just refill any AIR placed here.
+fn create_drainage_strip(editor: &mut WorldEditor, center_x: i32, center_z: i32, width: i32) {
+    let half_width = width / 2;
+
+    for x in (center_x - half_width)..=(center_x + half_width) {
+        for z in (center_z - half_width)..=(center_z + half_width) {
+            let dx = (x - center_x).abs();
+            let dz = (z - center_z).abs();
+            let distance_from_center = dx.max(dz);
+
+            if distance_from_center > half_width {
+                continue;
+            }
+
+            let ground_y = editor.get_ground_level(x, z);
+
+            // Clear any vegetation right above the strip so the water
+            // surface is visible and reachable.
+            for above in 1..=2 {
+                editor.set_block_absolute(
+                    AIR,
+                    x,
+                    ground_y + above,
+                    z,
+                    Some(&[
+                        GRASS,
+                        WHEAT,
+                        CARROTS,
+                        POTATOES,
+                        DEAD_BUSH,
+                        OAK_LEAVES,
+                        TALL_GRASS_BOTTOM,
+                        TALL_GRASS_TOP,
+                        FERN,
+                        LARGE_FERN_LOWER,
+                        LARGE_FERN_UPPER,
+                        RED_FLOWER,
+                        BLUE_FLOWER,
+                        WHITE_FLOWER,
+                        YELLOW_FLOWER,
+                    ]),
+                    None,
+                );
+            }
+
+            // Stamp WATER at the surface. It survives the
+            // ground-generation pass because the surface refill at
+            // `ground_y` uses `set_block_if_absent_absolute`, which
+            // skips non-AIR cells.
+            editor.set_block_absolute(WATER, x, ground_y, z, None, Some(&[]));
         }
     }
 }
